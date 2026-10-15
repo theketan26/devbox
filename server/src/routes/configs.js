@@ -405,7 +405,7 @@ router.post('/import', requireAuth, (req, res) => {
       // Versioning
       const versions = db.data.config_versions.filter(v => v.config_id === existing.id);
       const nextVer = versions.reduce((max, v) => Math.max(max, v.version_number), 0) + 1;
-      db.data.config_versions.push({
+      const versionRecord = {
         id: uuidv4(),
         config_id: existing.id,
         version_number: nextVer,
@@ -413,7 +413,10 @@ router.post('/import', requireAuth, (req, res) => {
         iv,
         auth_tag: authTag,
         created_at: now
-      });
+      };
+      db.data.config_versions.push(versionRecord);
+      saveRecordToSupabase('configs_and_secrets', existing);
+      saveRecordToSupabase('config_versions', versionRecord);
       imported.push({ key: rawKey, action: 'updated', version: nextVer });
     } else {
       const configId = uuidv4();
@@ -430,8 +433,7 @@ router.post('/import', requireAuth, (req, res) => {
         created_at: now,
         updated_at: now
       };
-      db.data.configs_and_secrets.push(newCfg);
-      db.data.config_versions.push({
+      const versionRecord = {
         id: uuidv4(),
         config_id: configId,
         version_number: 1,
@@ -439,7 +441,11 @@ router.post('/import', requireAuth, (req, res) => {
         iv,
         auth_tag: authTag,
         created_at: now
-      });
+      };
+      db.data.configs_and_secrets.push(newCfg);
+      db.data.config_versions.push(versionRecord);
+      saveRecordToSupabase('configs_and_secrets', newCfg);
+      saveRecordToSupabase('config_versions', versionRecord);
       imported.push({ key: rawKey, action: 'created', version: 1 });
     }
   });
