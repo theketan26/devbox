@@ -1,5 +1,8 @@
 import express from 'express';
 import cors from 'cors';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import fs from 'fs';
 import { config } from './config/env.js';
 import { db } from './db/index.js';
 import { runAllDueHealthChecks } from './services/healthChecker.js';
@@ -130,7 +133,33 @@ app.get('/api/status', (req, res) => {
   });
 });
 
-// 404 Handler
+// Serve Frontend Client Static Assets (Production / Docker / Render)
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const clientDistPath = path.resolve(__dirname, '../../client/dist');
+const altDistPath = path.resolve(__dirname, '../client/dist');
+const localPublicPath = path.resolve(__dirname, '../public');
+
+const staticDir = fs.existsSync(clientDistPath)
+  ? clientDistPath
+  : fs.existsSync(altDistPath)
+  ? altDistPath
+  : fs.existsSync(localPublicPath)
+  ? localPublicPath
+  : null;
+
+if (staticDir) {
+  console.log(`[Dev Box Server] Serving frontend static assets from: ${staticDir}`);
+  app.use(express.static(staticDir));
+  app.get('*', (req, res, next) => {
+    if (req.path.startsWith('/api')) {
+      return next();
+    }
+    res.sendFile(path.join(staticDir, 'index.html'));
+  });
+}
+
+// 404 Handler for unhandled API endpoints
 app.use((req, res) => {
   res.status(404).json({ error: `Cannot ${req.method} ${req.path}` });
 });

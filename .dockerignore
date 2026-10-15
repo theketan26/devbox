@@ -1,0 +1,38 @@
+# Dependencies
+node_modules/
+*/node_modules/
+
+# Local Environment Variables & Secrets
+.env
+.env.*
+*.env
+server/.env
+client/.env
+
+# Local build artifacts
+client/dist/
+dist/
+build/
+
+# Git & Editor
+.git/
+.gitignore
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+npm-debug.log*
+
+# Database & local data
+server/data/
+*.db
+*.db.json
+*.sqlite
