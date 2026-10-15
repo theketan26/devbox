@@ -1,42 +1,54 @@
 import express from 'express';
-import { db } from '../db/index.js';
 import { decryptSecret } from '../utils/crypto.js';
 import { exportDotEnv } from '../utils/exporter.js';
 import { requireCliKey } from '../middleware/auth.js';
+import { getSupabase } from '../services/supabase.js';
 
 const router = express.Router();
 
 /**
- * Local CLI utility endpoint
+ * Local CLI utility endpoint directly from Supabase DB
  * GET /api/cli/pull
  */
-router.get('/pull', requireCliKey, (req, res) => {
+router.get('/pull', requireCliKey, async (req, res) => {
+  const client = getSupabase();
+  if (!client) return res.status(500).json({ error: 'Database client not initialized' });
+
   const { projectId, applicationId, environment = 'development', format = 'dotenv' } = req.query;
 
-  let configs = db.data.configs_and_secrets.filter(c => c.environment === environment);
+  try {
+    let query = client.from('configs_and_secrets').select('*').eq('environment', environment);
 
-  if (applicationId) {
-    configs = configs.filter(c => c.application_id === applicationId);
-  } else if (projectId) {
-    configs = configs.filter(c => c.project_id === projectId);
-  }
+    if (applicationId) {
+      query = query.eq('application_id', applicationId);
+    } else if (projectId) {
+      query = query.eq('project_id', projectId);
+    }
 
-  const decryptedMap = {};
-  configs.forEach(c => {
-    decryptedMap[c.id] = decryptSecret(c.encrypted_value, c.iv, c.auth_tag);
-  });
+    const { data: configs, error } = await query;
+    if (error) throw error;
 
-  if (format === 'json') {
-    const jsonResult = {};
-    configs.forEach(c => {
-      jsonResult[c.key] = decryptedMap[c.id];
+    const list = configs || [];
+    const decryptedMap = {};
+    list.forEach(c => {
+      decryptedMap[c.id] = decryptSecret(c.encrypted_value, c.iv, c.auth_tag);
     });
-    return res.json(jsonResult);
-  }
 
-  const dotEnvContent = exportDotEnv(configs, decryptedMap);
-  res.setHeader('Content-Type', 'text/plain');
-  return res.send(dotEnvContent);
+    if (format === 'json') {
+      const jsonResult = {};
+      list.forEach(c => {
+        jsonResult[c.key] = decryptedMap[c.id];
+      });
+      return res.json(jsonResult);
+    }
+
+    const dotEnvContent = exportDotEnv(list, decryptedMap);
+    res.setHeader('Content-Type', 'text/plain');
+    return res.send(dotEnvContent);
+  } catch (err) {
+    console.error('GET /api/cli/pull error:', err);
+    return res.status(500).json({ error: err.message });
+  }
 });
 
 export default router;

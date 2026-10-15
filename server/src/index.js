@@ -4,9 +4,8 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
 import { config } from './config/env.js';
-import { db } from './db/index.js';
 import { runAllDueHealthChecks } from './services/healthChecker.js';
-import { syncHealthChecksWithPgCron, syncAllFromSupabase } from './services/supabase.js';
+import { syncHealthChecksWithPgCron, syncAllFromSupabase, getSupabase } from './services/supabase.js';
 
 import authRouter from './routes/auth.js';
 import projectsRouter from './routes/projects.js';
@@ -67,60 +66,86 @@ app.get('/api/cron/health-check', async (req, res) => {
   });
 });
 
-// Global Dashboard Metrics Aggregator
-app.get('/api/dashboard/stats', (req, res) => {
-  const totalProjects = db.data.projects.length;
-  const totalApplications = db.data.applications.length;
-  const totalConfigs = db.data.configs_and_secrets.length;
-  const totalHealthChecks = db.data.health_checks.length;
+// Global Dashboard Metrics Aggregator directly from Supabase DB
+app.get('/api/dashboard/stats', async (req, res) => {
+  const client = getSupabase();
+  if (!client) return res.status(500).json({ error: 'Database client not initialized' });
 
-  const healthyChecks = db.data.health_checks.filter(h => h.current_status === 'healthy').length;
-  const downChecks = db.data.health_checks.filter(h => h.current_status === 'down').length;
-  const maintenanceChecks = db.data.health_checks.filter(h => h.is_maintenance_mode).length;
+  try {
+    const [
+      { data: projects },
+      { data: applications },
+      { data: configs },
+      { data: healthChecks },
+      { data: expirations },
+      { data: logs }
+    ] = await Promise.all([
+      client.from('projects').select('id, name'),
+      client.from('applications').select('id, project_id, name'),
+      client.from('configs_and_secrets').select('id'),
+      client.from('health_checks').select('*'),
+      client.from('credential_expirations').select('*'),
+      client.from('health_check_logs').select('*').order('checked_at', { ascending: false }).limit(8)
+    ]);
 
-  // Healthy apps: all probes healthy (none down)
-  const healthyApplications = db.data.applications.filter(app => {
-    const appChecks = db.data.health_checks.filter(h => h.application_id === app.id);
-    return appChecks.length > 0 && appChecks.every(h => h.current_status === 'healthy');
-  }).length;
+    const projs = projects || [];
+    const apps = applications || [];
+    const cfgs = configs || [];
+    const checks = healthChecks || [];
+    const exps = expirations || [];
+    const recentLogs = logs || [];
 
-  // Healthy projects: every app in project is healthy
-  const healthyProjects = db.data.projects.filter(proj => {
-    const projApps = db.data.applications.filter(a => a.project_id === proj.id);
-    if (projApps.length === 0) return true;
-    return projApps.every(app => {
-      const appChecks = db.data.health_checks.filter(h => h.application_id === app.id);
+    const totalProjects = projs.length;
+    const totalApplications = apps.length;
+    const totalConfigs = cfgs.length;
+    const totalHealthChecks = checks.length;
+
+    const healthyChecks = checks.filter(h => h.current_status === 'healthy').length;
+    const downChecks = checks.filter(h => h.current_status === 'down').length;
+    const maintenanceChecks = checks.filter(h => h.is_maintenance_mode).length;
+
+    // Healthy apps: all probes healthy (none down)
+    const healthyApplications = apps.filter(app => {
+      const appChecks = checks.filter(h => h.application_id === app.id);
       return appChecks.length > 0 && appChecks.every(h => h.current_status === 'healthy');
+    }).length;
+
+    // Healthy projects: every app in project is healthy
+    const healthyProjects = projs.filter(proj => {
+      const projApps = apps.filter(a => a.project_id === proj.id);
+      if (projApps.length === 0) return true;
+      return projApps.every(app => {
+        const appChecks = checks.filter(h => h.application_id === app.id);
+        return appChecks.length > 0 && appChecks.every(h => h.current_status === 'healthy');
+      });
+    }).length;
+
+    // Urgent expirations (next 14 days)
+    const now = Date.now();
+    const urgentExpirations = exps.filter(e => {
+      const diffDays = Math.ceil((new Date(e.expires_at).getTime() - now) / (1000 * 60 * 60 * 24));
+      return diffDays <= (e.alert_days_before || 14);
     });
-  }).length;
 
-  // Urgent expirations (next 14 days)
-  const now = Date.now();
-  const urgentExpirations = db.data.credential_expirations.filter(e => {
-    const diffDays = Math.ceil((new Date(e.expires_at).getTime() - now) / (1000 * 60 * 60 * 24));
-    return diffDays <= (e.alert_days_before || 14);
-  });
-
-  // Recent logs
-  const recentLogs = [...db.data.health_check_logs]
-    .sort((a, b) => new Date(b.checked_at).getTime() - new Date(a.checked_at).getTime())
-    .slice(0, 8);
-
-  return res.json({
-    totalProjects,
-    totalApplications,
-    totalConfigs,
-    totalHealthChecks,
-    health: {
-      healthy: healthyChecks,
-      down: downChecks,
-      maintenance: maintenanceChecks
-    },
-    urgentExpirationsCount: urgentExpirations.length,
-    healthyApplications,
-    healthyProjects,
-    recentLogs
-  });
+    return res.json({
+      totalProjects,
+      totalApplications,
+      totalConfigs,
+      totalHealthChecks,
+      health: {
+        healthy: healthyChecks,
+        down: downChecks,
+        maintenance: maintenanceChecks
+      },
+      urgentExpirationsCount: urgentExpirations.length,
+      healthyApplications,
+      healthyProjects,
+      recentLogs
+    });
+  } catch (err) {
+    console.error('GET /api/dashboard/stats error:', err);
+    return res.status(500).json({ error: err.message });
+  }
 });
 
 // Root API Health Status
@@ -187,4 +212,3 @@ if (process.env.NODE_ENV !== 'test') {
 }
 
 export default app;
-

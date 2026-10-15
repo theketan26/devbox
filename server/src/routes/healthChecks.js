@@ -1,6 +1,5 @@
 import express from 'express';
 import { v4 as uuidv4 } from 'uuid';
-import { db } from '../db/index.js';
 import { executeHealthCheck, runAllDueHealthChecks } from '../services/healthChecker.js';
 import { requireAuth, requireCronSecret } from '../middleware/auth.js';
 import {
@@ -8,8 +7,7 @@ import {
   deleteProbeCron,
   fetchAllPgCrons,
   syncHealthChecksWithPgCron,
-  saveRecordToSupabase,
-  deleteRecordFromSupabase
+  getSupabase
 } from '../services/supabase.js';
 
 const router = express.Router();
@@ -54,43 +52,64 @@ router.post('/pg-cron/sync', requireAuth, async (req, res) => {
  * GET /api/health-checks
  */
 router.get('/', async (req, res) => {
+  const client = getSupabase();
+  if (!client) return res.status(500).json({ error: 'Database client not initialized' });
+
   const { applicationId } = req.query;
-  let checks = db.data.health_checks;
 
-  if (applicationId) {
-    checks = checks.filter(c => c.application_id === applicationId);
+  try {
+    let checkQuery = client.from('health_checks').select('*').order('created_at', { ascending: false });
+    if (applicationId) {
+      checkQuery = checkQuery.eq('application_id', applicationId);
+    }
+
+    const [
+      { data: rawChecks, error: cErr },
+      { data: allApps, error: aErr },
+      { data: allProjects, error: pErr },
+      { data: allLogs, error: lErr },
+      pgCrons
+    ] = await Promise.all([
+      checkQuery,
+      client.from('applications').select('*'),
+      client.from('projects').select('*'),
+      client.from('health_check_logs').select('*').order('checked_at', { ascending: false }),
+      fetchAllPgCrons()
+    ]);
+
+    if (cErr) throw cErr;
+
+    const checks = rawChecks || [];
+    const apps = allApps || [];
+    const projects = allProjects || [];
+    const logs = allLogs || [];
+
+    const enriched = checks.map(c => {
+      const checkLogs = logs.filter(l => l.health_check_id === c.id);
+      const app = apps.find(a => a.id === c.application_id);
+      const project = app ? projects.find(p => p.id === app.project_id) : null;
+
+      const totalRuns = checkLogs.length;
+      const successfulRuns = checkLogs.filter(l => l.is_success).length;
+      const uptimePct = totalRuns > 0 ? +((successfulRuns / totalRuns) * 100).toFixed(1) : 100.0;
+
+      const pgCronJob = (pgCrons || []).find(j => j.health_check_id === c.id) || null;
+
+      return {
+        ...c,
+        applicationName: app ? app.name : 'Unknown Application',
+        projectName: project ? project.name : 'Unknown Project',
+        uptimePct,
+        recentLogs: checkLogs.slice(0, 10),
+        pg_cron: pgCronJob
+      };
+    });
+
+    return res.json(enriched);
+  } catch (err) {
+    console.error('GET /api/health-checks error:', err);
+    return res.status(500).json({ error: err.message });
   }
-
-  // Fetch Supabase pg_crons to enrich each probe
-  const pgCrons = await fetchAllPgCrons();
-
-  const enriched = checks.map(c => {
-    const logs = db.data.health_check_logs
-      .filter(l => l.health_check_id === c.id)
-      .sort((a, b) => new Date(b.checked_at).getTime() - new Date(a.checked_at).getTime());
-
-    const app = db.data.applications.find(a => a.id === c.application_id);
-    const project = app ? db.data.projects.find(p => p.id === app.project_id) : null;
-
-    // Calculate uptime percentage over available logs
-    const totalRuns = logs.length;
-    const successfulRuns = logs.filter(l => l.is_success).length;
-    const uptimePct = totalRuns > 0 ? +((successfulRuns / totalRuns) * 100).toFixed(1) : 100.0;
-
-    // Associated pg_cron job from Supabase
-    const pgCronJob = pgCrons.find(j => j.health_check_id === c.id) || null;
-
-    return {
-      ...c,
-      applicationName: app ? app.name : 'Unknown Application',
-      projectName: project ? project.name : 'Unknown Project',
-      uptimePct,
-      recentLogs: logs.slice(0, 10),
-      pg_cron: pgCronJob
-    };
-  });
-
-  return res.json(enriched);
 });
 
 /**
@@ -98,23 +117,35 @@ router.get('/', async (req, res) => {
  * GET /api/health-checks/:id
  */
 router.get('/:id', async (req, res) => {
-  const check = db.data.health_checks.find(c => c.id === req.params.id);
-  if (!check) {
-    return res.status(404).json({ error: 'Health check not found' });
+  const client = getSupabase();
+  if (!client) return res.status(500).json({ error: 'Database client not initialized' });
+
+  try {
+    const [
+      { data: check, error: cErr },
+      { data: logs, error: lErr },
+      pgCrons
+    ] = await Promise.all([
+      client.from('health_checks').select('*').eq('id', req.params.id).single(),
+      client.from('health_check_logs').select('*').eq('health_check_id', req.params.id).order('checked_at', { ascending: false }),
+      fetchAllPgCrons()
+    ]);
+
+    if (cErr || !check) {
+      return res.status(404).json({ error: 'Health check not found' });
+    }
+
+    const pgCron = (pgCrons || []).find(j => j.health_check_id === check.id) || null;
+
+    return res.json({
+      ...check,
+      logs: logs || [],
+      pg_cron: pgCron
+    });
+  } catch (err) {
+    console.error('GET /api/health-checks/:id error:', err);
+    return res.status(500).json({ error: err.message });
   }
-
-  const logs = db.data.health_check_logs
-    .filter(l => l.health_check_id === check.id)
-    .sort((a, b) => new Date(b.checked_at).getTime() - new Date(a.checked_at).getTime());
-
-  const pgCrons = await fetchAllPgCrons();
-  const pgCron = pgCrons.find(j => j.health_check_id === check.id) || null;
-
-  return res.json({
-    ...check,
-    logs,
-    pg_cron: pgCron
-  });
 });
 
 /**
@@ -122,6 +153,9 @@ router.get('/:id', async (req, res) => {
  * POST /api/health-checks
  */
 router.post('/', requireAuth, async (req, res) => {
+  const client = getSupabase();
+  if (!client) return res.status(500).json({ error: 'Database client not initialized' });
+
   const {
     application_id,
     name,
@@ -161,17 +195,26 @@ router.post('/', requireAuth, async (req, res) => {
     created_at: now
   };
 
-  db.data.health_checks.push(newCheck);
-  db.save();
-  saveRecordToSupabase('health_checks', newCheck);
+  try {
+    const { data: inserted, error: iErr } = await client
+      .from('health_checks')
+      .insert(newCheck)
+      .select()
+      .single();
 
-  // Register native pg_cron job in Supabase
-  const pgCron = await createOrUpdateProbeCron(newCheck);
+    if (iErr) throw iErr;
 
-  return res.status(201).json({
-    ...newCheck,
-    pg_cron: pgCron
-  });
+    // Register native pg_cron job in Supabase
+    const pgCron = await createOrUpdateProbeCron(inserted || newCheck);
+
+    return res.status(201).json({
+      ...(inserted || newCheck),
+      pg_cron: pgCron
+    });
+  } catch (err) {
+    console.error('POST /api/health-checks error:', err);
+    return res.status(500).json({ error: err.message });
+  }
 });
 
 /**
@@ -179,10 +222,8 @@ router.post('/', requireAuth, async (req, res) => {
  * PUT /api/health-checks/:id
  */
 router.put('/:id', requireAuth, async (req, res) => {
-  const check = db.data.health_checks.find(c => c.id === req.params.id);
-  if (!check) {
-    return res.status(404).json({ error: 'Health check not found' });
-  }
+  const client = getSupabase();
+  if (!client) return res.status(500).json({ error: 'Database client not initialized' });
 
   const {
     name,
@@ -196,36 +237,47 @@ router.put('/:id', requireAuth, async (req, res) => {
     is_active
   } = req.body;
 
-  if (name) check.name = name.trim();
-  if (endpoint_url) check.endpoint_url = endpoint_url.trim();
-  if (method) check.method = method.toUpperCase();
-  if (interval_minutes !== undefined) check.interval_minutes = Number(interval_minutes);
-  if (timeout_ms !== undefined) check.timeout_ms = Number(timeout_ms);
-  if (expected_status !== undefined) check.expected_status = Number(expected_status);
-  if (expected_json_payload !== undefined) check.expected_json_payload = expected_json_payload;
-  if (is_active !== undefined) check.is_active = Boolean(is_active);
+  const updates = {};
+  if (name) updates.name = name.trim();
+  if (endpoint_url) updates.endpoint_url = endpoint_url.trim();
+  if (method) updates.method = method.toUpperCase();
+  if (interval_minutes !== undefined) updates.interval_minutes = Number(interval_minutes);
+  if (timeout_ms !== undefined) updates.timeout_ms = Number(timeout_ms);
+  if (expected_status !== undefined) updates.expected_status = Number(expected_status);
+  if (expected_json_payload !== undefined) updates.expected_json_payload = expected_json_payload;
+  if (is_active !== undefined) updates.is_active = Boolean(is_active);
 
   if (is_maintenance_mode !== undefined) {
-    check.is_maintenance_mode = Boolean(is_maintenance_mode);
-    if (check.is_maintenance_mode) {
-      check.current_status = 'maintenance';
-      check.consecutive_failures = 0;
-      check.down_since = null;
+    updates.is_maintenance_mode = Boolean(is_maintenance_mode);
+    if (updates.is_maintenance_mode) {
+      updates.current_status = 'maintenance';
+      updates.consecutive_failures = 0;
+      updates.down_since = null;
     } else {
-      check.current_status = 'unknown';
+      updates.current_status = 'unknown';
     }
   }
 
-  db.save();
-  saveRecordToSupabase('health_checks', check);
+  try {
+    const { data: updated, error: uErr } = await client
+      .from('health_checks')
+      .update(updates)
+      .eq('id', req.params.id)
+      .select()
+      .single();
 
-  // Update pg_cron job in Supabase (updates schedule and active status)
-  const pgCron = await createOrUpdateProbeCron(check);
+    if (uErr) throw uErr;
 
-  return res.json({
-    ...check,
-    pg_cron: pgCron
-  });
+    const pgCron = await createOrUpdateProbeCron(updated);
+
+    return res.json({
+      ...updated,
+      pg_cron: pgCron
+    });
+  } catch (err) {
+    console.error('PUT /api/health-checks/:id error:', err);
+    return res.status(500).json({ error: err.message });
+  }
 });
 
 /**
@@ -233,22 +285,29 @@ router.put('/:id', requireAuth, async (req, res) => {
  * POST /api/health-checks/:id/ping
  */
 router.post('/:id/ping', requireAuth, async (req, res) => {
-  const result = await executeHealthCheck(req.params.id);
-  if (!result) {
-    return res.status(404).json({ error: 'Health check not found' });
-  }
+  try {
+    const result = await executeHealthCheck(req.params.id);
+    if (!result) {
+      return res.status(404).json({ error: 'Health check not found' });
+    }
 
-  // Update pg_cron status
-  const check = db.data.health_checks.find(c => c.id === req.params.id);
-  let pgCron = null;
-  if (check) {
-    pgCron = await createOrUpdateProbeCron(check);
-  }
+    const client = getSupabase();
+    let pgCron = null;
+    if (client) {
+      const { data: check } = await client.from('health_checks').select('*').eq('id', req.params.id).single();
+      if (check) {
+        pgCron = await createOrUpdateProbeCron(check);
+      }
+    }
 
-  return res.json({
-    ...result,
-    pg_cron: pgCron
-  });
+    return res.json({
+      ...result,
+      pg_cron: pgCron
+    });
+  } catch (err) {
+    console.error('POST /api/health-checks/:id/ping error:', err);
+    return res.status(500).json({ error: err.message });
+  }
 });
 
 /**
@@ -256,20 +315,24 @@ router.post('/:id/ping', requireAuth, async (req, res) => {
  * DELETE /api/health-checks/:id
  */
 router.delete('/:id', requireAuth, async (req, res) => {
-  const index = db.data.health_checks.findIndex(c => c.id === req.params.id);
-  if (index === -1) {
-    return res.status(404).json({ error: 'Health check not found' });
+  const client = getSupabase();
+  if (!client) return res.status(500).json({ error: 'Database client not initialized' });
+
+  try {
+    await deleteProbeCron(req.params.id);
+
+    // Delete logs first
+    await client.from('health_check_logs').delete().eq('health_check_id', req.params.id);
+
+    // Delete check
+    const { error } = await client.from('health_checks').delete().eq('id', req.params.id);
+    if (error) throw error;
+
+    return res.json({ success: true, message: 'Health check and pg_cron unscheduled' });
+  } catch (err) {
+    console.error('DELETE /api/health-checks/:id error:', err);
+    return res.status(500).json({ error: err.message });
   }
-
-  // Unschedule from Supabase pg_cron
-  await deleteProbeCron(req.params.id);
-
-  db.data.health_checks.splice(index, 1);
-  db.data.health_check_logs = db.data.health_check_logs.filter(l => l.health_check_id !== req.params.id);
-  db.save();
-  deleteRecordFromSupabase('health_checks', req.params.id);
-
-  return res.json({ success: true, message: 'Health check and pg_cron unscheduled' });
 });
 
 /**
@@ -280,27 +343,35 @@ router.get('/cron/run', requireCronSecret, async (req, res) => {
   console.log('[Cron] Health check trigger received via pg_net/cron');
   const { id } = req.query;
 
-  if (id) {
-    const singleResult = await executeHealthCheck(id);
-    const check = db.data.health_checks.find(c => c.id === id);
-    if (check) {
-      await createOrUpdateProbeCron(check);
+  try {
+    if (id) {
+      const singleResult = await executeHealthCheck(id);
+      const client = getSupabase();
+      if (client) {
+        const { data: check } = await client.from('health_checks').select('*').eq('id', id).single();
+        if (check) {
+          await createOrUpdateProbeCron(check);
+        }
+      }
+      return res.json({
+        success: true,
+        executedCount: 1,
+        timestamp: new Date().toISOString(),
+        result: singleResult
+      });
     }
+
+    const results = await runAllDueHealthChecks();
     return res.json({
       success: true,
-      executedCount: 1,
+      executedCount: results.length,
       timestamp: new Date().toISOString(),
-      result: singleResult
+      results
     });
+  } catch (err) {
+    console.error('GET /api/health-checks/cron/run error:', err);
+    return res.status(500).json({ error: err.message });
   }
-
-  const results = await runAllDueHealthChecks();
-  return res.json({
-    success: true,
-    executedCount: results.length,
-    timestamp: new Date().toISOString(),
-    results
-  });
 });
 
 export default router;

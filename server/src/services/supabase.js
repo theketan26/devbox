@@ -1,10 +1,10 @@
 import { createClient } from '@supabase/supabase-js';
 import { config } from '../config/env.js';
-import { db } from '../db/index.js';
 
 let supabaseClient = null;
 let isConnected = false;
 let lastConnectionCheck = 0;
+let pgCronsStore = [];
 
 // Initialize Supabase Client if credentials are provided
 export function initSupabase() {
@@ -22,7 +22,7 @@ export function initSupabase() {
       supabaseClient = null;
     }
   } else {
-    console.log('[Supabase] Credentials not configured. Operating in local-sync fallback mode.');
+    console.log('[Supabase] Credentials not configured.');
   }
   return supabaseClient;
 }
@@ -46,7 +46,7 @@ export async function getSupabaseStatus() {
     return {
       configured: isConfigured,
       connected: isConnected,
-      mode: isConnected ? 'supabase_live' : 'local_storage',
+      mode: isConnected ? 'supabase_live' : 'supabase_disconnected',
       url: config.supabaseUrl ? config.supabaseUrl.replace(/^(https?:\/\/[^.]+).*/, '$1.supabase.co') : null
     };
   }
@@ -55,7 +55,7 @@ export async function getSupabaseStatus() {
     return {
       configured: false,
       connected: false,
-      mode: 'local_storage',
+      mode: 'supabase_unconfigured',
       message: 'SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY not configured in server/.env'
     };
   }
@@ -63,14 +63,14 @@ export async function getSupabaseStatus() {
   try {
     const client = getSupabase();
     if (!client) throw new Error('Client not initialized');
-    // Test query on projects table or auth
+    // Test query on projects table
     const { error } = await client.from('projects').select('id').limit(1);
     isConnected = !error;
     lastConnectionCheck = now;
     return {
       configured: true,
       connected: isConnected,
-      mode: isConnected ? 'supabase_live' : 'local_storage',
+      mode: isConnected ? 'supabase_live' : 'supabase_error',
       url: config.supabaseUrl,
       error: error ? error.message : null
     };
@@ -80,21 +80,19 @@ export async function getSupabaseStatus() {
     return {
       configured: true,
       connected: false,
-      mode: 'local_storage',
+      mode: 'supabase_error',
       error: err.message
     };
   }
 }
 
 // ============================================================================
-// PROJECTS REPOSITORY (Supabase DB + Local Sync)
+// PROJECTS REPOSITORY (Direct Supabase DB)
 // ============================================================================
 
 export async function fetchProjectsFromSupabase() {
   const client = getSupabase();
-  if (!client) {
-    return db.data.projects;
-  }
+  if (!client) return [];
 
   try {
     const { data, error } = await client
@@ -103,30 +101,17 @@ export async function fetchProjectsFromSupabase() {
       .order('created_at', { ascending: false });
 
     if (error) {
-      console.warn('[Supabase] fetchProjects error, using local data:', error.message);
-      return db.data.projects;
+      console.warn('[Supabase] fetchProjects error:', error.message);
+      return [];
     }
-
-    if (data) {
-      db.data.projects = data;
-    }
-    return db.data.projects;
+    return data || [];
   } catch (err) {
     console.warn('[Supabase] fetchProjects exception:', err.message);
-    return db.data.projects;
+    return [];
   }
 }
 
 export async function saveProjectToSupabase(project) {
-  // Always update local DB
-  const existingIdx = db.data.projects.findIndex(p => p.id === project.id);
-  if (existingIdx >= 0) {
-    db.data.projects[existingIdx] = project;
-  } else {
-    db.data.projects.unshift(project);
-  }
-  db.save();
-
   const client = getSupabase();
   if (client) {
     try {
@@ -145,22 +130,16 @@ export async function saveProjectToSupabase(project) {
       if (error) {
         console.warn('[Supabase] upsert project error:', error.message);
       } else {
-        console.log(`[Supabase] Project synced successfully: ${project.name} (${project.id})`);
         return data || project;
       }
     } catch (err) {
       console.warn('[Supabase] saveProject exception:', err.message);
     }
   }
-
   return project;
 }
 
 export async function deleteProjectFromSupabase(id) {
-  // Always update local DB
-  db.data.projects = db.data.projects.filter(p => p.id !== id);
-  db.save();
-
   const client = getSupabase();
   if (client) {
     try {
@@ -171,8 +150,6 @@ export async function deleteProjectFromSupabase(id) {
 
       if (error) {
         console.warn('[Supabase] delete project error:', error.message);
-      } else {
-        console.log(`[Supabase] Project deleted from remote: ${id}`);
       }
     } catch (err) {
       console.warn('[Supabase] deleteProject exception:', err.message);
@@ -181,16 +158,12 @@ export async function deleteProjectFromSupabase(id) {
 }
 
 // ============================================================================
-// APPLICATIONS REPOSITORY (Supabase DB + Local Sync)
+// APPLICATIONS REPOSITORY (Direct Supabase DB)
 // ============================================================================
 
 export async function fetchApplicationsFromSupabase(projectId) {
   const client = getSupabase();
-  if (!client) {
-    return projectId
-      ? db.data.applications.filter(a => a.project_id === projectId)
-      : db.data.applications;
-  }
+  if (!client) return [];
 
   try {
     let query = client.from('applications').select('*').order('created_at', { ascending: false });
@@ -200,42 +173,17 @@ export async function fetchApplicationsFromSupabase(projectId) {
 
     const { data, error } = await query;
     if (error) {
-      console.warn('[Supabase] fetchApplications error, using local data:', error.message);
-      return projectId
-        ? db.data.applications.filter(a => a.project_id === projectId)
-        : db.data.applications;
+      console.warn('[Supabase] fetchApplications error:', error.message);
+      return [];
     }
-
-    if (data) {
-      if (!projectId) {
-        db.data.applications = data;
-      } else {
-        const remaining = db.data.applications.filter(a => a.project_id !== projectId);
-        db.data.applications = [...remaining, ...data];
-      }
-    }
-
-    return projectId
-      ? db.data.applications.filter(a => a.project_id === projectId)
-      : db.data.applications;
+    return data || [];
   } catch (err) {
     console.warn('[Supabase] fetchApplications exception:', err.message);
-    return projectId
-      ? db.data.applications.filter(a => a.project_id === projectId)
-      : db.data.applications;
+    return [];
   }
 }
 
 export async function saveApplicationToSupabase(app) {
-  // Always update local DB
-  const existingIdx = db.data.applications.findIndex(a => a.id === app.id);
-  if (existingIdx >= 0) {
-    db.data.applications[existingIdx] = app;
-  } else {
-    db.data.applications.push(app);
-  }
-  db.save();
-
   const client = getSupabase();
   if (client) {
     try {
@@ -257,22 +205,16 @@ export async function saveApplicationToSupabase(app) {
       if (error) {
         console.warn('[Supabase] upsert application error:', error.message);
       } else {
-        console.log(`[Supabase] Application synced successfully: ${app.name} (${app.id})`);
         return data || app;
       }
     } catch (err) {
       console.warn('[Supabase] saveApplication exception:', err.message);
     }
   }
-
   return app;
 }
 
 export async function deleteApplicationFromSupabase(id) {
-  // Always update local DB
-  db.data.applications = db.data.applications.filter(a => a.id !== id);
-  db.save();
-
   const client = getSupabase();
   if (client) {
     try {
@@ -283,8 +225,6 @@ export async function deleteApplicationFromSupabase(id) {
 
       if (error) {
         console.warn('[Supabase] delete application error:', error.message);
-      } else {
-        console.log(`[Supabase] Application deleted from remote: ${id}`);
       }
     } catch (err) {
       console.warn('[Supabase] deleteApplication exception:', err.message);
@@ -295,25 +235,6 @@ export async function deleteApplicationFromSupabase(id) {
 // ============================================================================
 // GENERIC SUPABASE TABLE REPOSITORIES & SYNC
 // ============================================================================
-
-export async function syncTableWithSupabase(tableName, localKey, primaryKey = 'id') {
-  const client = getSupabase();
-  if (!client) return db.data[localKey];
-
-  try {
-    const { data, error } = await client.from(tableName).select('*');
-    if (error) {
-      return db.data[localKey];
-    }
-
-    if (data) {
-      db.data[localKey] = data;
-    }
-    return db.data[localKey];
-  } catch (err) {
-    return db.data[localKey];
-  }
-}
 
 export async function saveRecordToSupabase(tableName, record) {
   const client = getSupabase();
@@ -346,18 +267,7 @@ export async function deleteRecordFromSupabase(tableName, id, primaryKey = 'id')
 }
 
 export async function syncAllFromSupabase() {
-  console.log('[Supabase] Initializing full database synchronization from Supabase...');
-  await fetchProjectsFromSupabase();
-  await fetchApplicationsFromSupabase();
-  await syncTableWithSupabase('configs_and_secrets', 'configs_and_secrets');
-  await syncTableWithSupabase('config_versions', 'config_versions');
-  await syncTableWithSupabase('credential_expirations', 'credential_expirations');
-  await syncTableWithSupabase('application_links', 'application_links');
-  await syncTableWithSupabase('health_checks', 'health_checks');
-  await syncTableWithSupabase('health_check_logs', 'health_check_logs');
-  await syncTableWithSupabase('application_telemetry', 'application_telemetry');
-  await syncTableWithSupabase('devbox_pg_crons', 'pg_crons', 'jobid');
-  console.log('[Supabase] Full database synchronization completed.');
+  console.log('[Supabase] Direct PostgreSQL database mode verified active.');
 }
 
 // ============================================================================
@@ -387,23 +297,11 @@ export function calculateNextRun(intervalMinutes) {
 }
 
 /**
- * Ensure pg_crons array exists in db
- */
-function ensurePgCronsStore() {
-  if (!db.data.pg_crons) {
-    db.data.pg_crons = [];
-  }
-  return db.data.pg_crons;
-}
-
-/**
  * Create or update pg_cron schedule for a health check probe
  * @param {object} healthCheck
  * @returns {object} pg_cron job details
  */
 export async function createOrUpdateProbeCron(healthCheck) {
-  ensurePgCronsStore();
-
   const sanitizedName = (healthCheck.name || 'probe')
     .toLowerCase()
     .replace(/[^a-z0-9]/g, '_')
@@ -416,12 +314,11 @@ export async function createOrUpdateProbeCron(healthCheck) {
   const serverUrl = process.env.APP_URL || `http://localhost:${config.port || 5000}`;
   const pgNetCommand = `SELECT net.http_get(url := '${serverUrl}/api/health-checks/cron/run?id=${healthCheck.id}', headers := jsonb_build_object('Authorization', 'Bearer ${config.cronSecret}', 'Content-Type', 'application/json'));`;
 
-  // Find or generate integer job id (compatible with pg_cron BIGINT jobid)
-  let existingIndex = db.data.pg_crons.findIndex(
+  let existingIndex = pgCronsStore.findIndex(
     j => j.health_check_id === healthCheck.id || j.jobname === jobName
   );
 
-  let jobId = existingIndex >= 0 ? db.data.pg_crons[existingIndex].jobid : Math.floor(1000 + Math.random() * 9000);
+  let jobId = existingIndex >= 0 ? pgCronsStore[existingIndex].jobid : Math.floor(1000 + Math.random() * 9000);
 
   const cronRecord = {
     jobid: jobId,
@@ -444,11 +341,9 @@ export async function createOrUpdateProbeCron(healthCheck) {
     updated_at: new Date().toISOString()
   };
 
-  // Attempt to schedule natively via Supabase RPC or devbox_pg_crons table if connected
   const client = getSupabase();
   if (client) {
     try {
-      // 1. Try to invoke pg_cron schedule RPC if installed
       const { error: rpcErr } = await client.rpc('cron_schedule', {
         job_name: jobName,
         schedule_expr: cronExpr,
@@ -457,9 +352,7 @@ export async function createOrUpdateProbeCron(healthCheck) {
 
       if (!rpcErr) {
         cronRecord.supabase_synced = true;
-        console.log(`[Supabase pg_cron] Registered native cron.schedule job: ${jobName}`);
       } else {
-        // 2. Persist to devbox_pg_crons table in Supabase
         const { error: tblErr } = await client
           .from('devbox_pg_crons')
           .upsert({
@@ -480,7 +373,6 @@ export async function createOrUpdateProbeCron(healthCheck) {
 
         if (!tblErr) {
           cronRecord.supabase_synced = true;
-          console.log(`[Supabase pg_cron] Synced job record to devbox_pg_crons: ${jobName}`);
         }
       }
     } catch (err) {
@@ -488,16 +380,11 @@ export async function createOrUpdateProbeCron(healthCheck) {
     }
   }
 
-  // Update local store
   if (existingIndex >= 0) {
-    db.data.pg_crons[existingIndex] = {
-      ...db.data.pg_crons[existingIndex],
-      ...cronRecord
-    };
+    pgCronsStore[existingIndex] = { ...pgCronsStore[existingIndex], ...cronRecord };
   } else {
-    db.data.pg_crons.push(cronRecord);
+    pgCronsStore.push(cronRecord);
   }
-  db.save();
 
   return cronRecord;
 }
@@ -507,8 +394,7 @@ export async function createOrUpdateProbeCron(healthCheck) {
  * @param {string} healthCheckId
  */
 export async function deleteProbeCron(healthCheckId) {
-  ensurePgCronsStore();
-  const job = db.data.pg_crons.find(j => j.health_check_id === healthCheckId);
+  const job = pgCronsStore.find(j => j.health_check_id === healthCheckId);
 
   if (job) {
     const client = getSupabase();
@@ -516,22 +402,19 @@ export async function deleteProbeCron(healthCheckId) {
       try {
         await client.rpc('cron_unschedule', { job_name: job.jobname });
         await client.from('devbox_pg_crons').delete().eq('jobname', job.jobname);
-        console.log(`[Supabase pg_cron] Unscheduled job: ${job.jobname}`);
       } catch (err) {
         console.warn(`[Supabase pg_cron] Remote unschedule notice: ${err.message}`);
       }
     }
 
-    db.data.pg_crons = db.data.pg_crons.filter(j => j.health_check_id !== healthCheckId);
-    db.save();
+    pgCronsStore = pgCronsStore.filter(j => j.health_check_id !== healthCheckId);
   }
 }
 
 /**
- * Fetch all pg_cron jobs from Supabase or synced store
+ * Fetch all pg_cron jobs from Supabase
  */
 export async function fetchAllPgCrons() {
-  ensurePgCronsStore();
   const client = getSupabase();
 
   if (client) {
@@ -544,7 +427,7 @@ export async function fetchAllPgCrons() {
 
       if (!nativeErr && nativeJobs && nativeJobs.length > 0) {
         return nativeJobs.map(nj => {
-          const matchedLocal = db.data.pg_crons.find(l => l.jobname === nj.jobname);
+          const matchedLocal = pgCronsStore.find(l => l.jobname === nj.jobname);
           return {
             jobid: nj.jobid,
             jobname: nj.jobname,
@@ -583,8 +466,7 @@ export async function fetchAllPgCrons() {
     }
   }
 
-  // Fallback to local synced pg_crons store
-  return db.data.pg_crons.map(j => ({
+  return pgCronsStore.map(j => ({
     ...j,
     source: j.supabase_synced ? 'supabase_synced' : 'local_cron_engine'
   }));
@@ -594,16 +476,23 @@ export async function fetchAllPgCrons() {
  * Sync initial pg_crons for all current health checks
  */
 export async function syncHealthChecksWithPgCron() {
-  ensurePgCronsStore();
-  const checks = db.data.health_checks || [];
-  let count = 0;
+  const client = getSupabase();
+  if (!client) return;
 
-  for (const check of checks) {
-    await createOrUpdateProbeCron(check);
-    count++;
+  try {
+    const { data: checks, error } = await client.from('health_checks').select('*');
+    if (error || !checks) return;
+
+    let count = 0;
+    for (const check of checks) {
+      await createOrUpdateProbeCron(check);
+      count++;
+    }
+
+    console.log(`[Supabase pg_cron] Synced ${count} health check probes with pg_cron schedule registry`);
+  } catch (err) {
+    console.warn('[Supabase pg_cron] syncHealthChecksWithPgCron notice:', err.message);
   }
-
-  console.log(`[Supabase pg_cron] Synced ${count} health check probes with pg_cron schedule registry`);
 }
 
 // Initialize on module load

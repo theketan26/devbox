@@ -1,38 +1,70 @@
 import express from 'express';
 import { v4 as uuidv4 } from 'uuid';
-import { db } from '../db/index.js';
 import { requireAuth } from '../middleware/auth.js';
-import { saveRecordToSupabase, deleteRecordFromSupabase } from '../services/supabase.js';
+import { getSupabase } from '../services/supabase.js';
 
 const router = express.Router();
 
 /**
- * List application and project resource links
+ * List application and project resource links directly from Supabase DB
  * GET /api/links
  */
-router.get('/', (req, res) => {
+router.get('/', async (req, res) => {
+  const client = getSupabase();
+  if (!client) return res.status(500).json({ error: 'Database client not initialized' });
+
   const { applicationId, projectId, includeArchived } = req.query;
-  let links = db.data.application_links;
 
-  if (applicationId) {
-    links = links.filter(l => l.application_id === applicationId);
-  } else if (projectId) {
-    const projectApps = db.data.applications.filter(a => a.project_id === projectId).map(a => a.id);
-    links = links.filter(l => l.project_id === projectId || projectApps.includes(l.application_id));
+  try {
+    let query = client.from('application_links').select('*').order('created_at', { ascending: false });
+
+    if (includeArchived !== 'true') {
+      query = query.eq('is_archived', false);
+    }
+
+    if (applicationId) {
+      query = query.eq('application_id', applicationId);
+      const { data, error } = await query;
+      if (error) throw error;
+      return res.json(data || []);
+    }
+
+    if (projectId) {
+      // Find all apps belonging to this project
+      const { data: projectApps } = await client
+        .from('applications')
+        .select('id')
+        .eq('project_id', projectId);
+
+      const appIds = (projectApps || []).map(a => a.id);
+
+      const { data, error } = await query;
+      if (error) throw error;
+
+      const filtered = (data || []).filter(l =>
+        l.project_id === projectId || (l.application_id && appIds.includes(l.application_id))
+      );
+      return res.json(filtered);
+    }
+
+    const { data, error } = await query;
+    if (error) throw error;
+
+    return res.json(data || []);
+  } catch (err) {
+    console.error('GET /api/links error:', err);
+    return res.status(500).json({ error: err.message });
   }
-
-  if (includeArchived !== 'true') {
-    links = links.filter(l => !l.is_archived);
-  }
-
-  return res.json(links);
 });
 
 /**
- * Create resource link
+ * Create resource link directly in Supabase DB
  * POST /api/links
  */
-router.post('/', requireAuth, (req, res) => {
+router.post('/', requireAuth, async (req, res) => {
+  const client = getSupabase();
+  if (!client) return res.status(500).json({ error: 'Database client not initialized' });
+
   const { application_id, project_id, title, url, category = 'General', notes } = req.body;
 
   if ((!application_id && !project_id) || !title || !url) {
@@ -53,46 +85,81 @@ router.post('/', requireAuth, (req, res) => {
     updated_at: now
   };
 
-  db.data.application_links.push(newLink);
-  db.save();
-  saveRecordToSupabase('application_links', newLink);
+  try {
+    const { data, error } = await client
+      .from('application_links')
+      .insert(newLink)
+      .select()
+      .single();
 
-  return res.status(201).json(newLink);
+    if (error) throw error;
+
+    return res.status(201).json(data || newLink);
+  } catch (err) {
+    console.error('POST /api/links error:', err);
+    return res.status(500).json({ error: err.message });
+  }
 });
 
 /**
- * Toggle archived status
+ * Toggle archived status directly in Supabase DB
  * PATCH /api/links/:id/archive
  */
-router.patch('/:id/archive', requireAuth, (req, res) => {
-  const link = db.data.application_links.find(l => l.id === req.params.id);
-  if (!link) {
-    return res.status(404).json({ error: 'Link not found' });
+router.patch('/:id/archive', requireAuth, async (req, res) => {
+  const client = getSupabase();
+  if (!client) return res.status(500).json({ error: 'Database client not initialized' });
+
+  try {
+    const { data: link, error: fErr } = await client
+      .from('application_links')
+      .select('*')
+      .eq('id', req.params.id)
+      .single();
+
+    if (fErr || !link) {
+      return res.status(404).json({ error: 'Link not found' });
+    }
+
+    const { data: updated, error: uErr } = await client
+      .from('application_links')
+      .update({
+        is_archived: !link.is_archived,
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', req.params.id)
+      .select()
+      .single();
+
+    if (uErr) throw uErr;
+
+    return res.json(updated);
+  } catch (err) {
+    console.error('PATCH /api/links/:id/archive error:', err);
+    return res.status(500).json({ error: err.message });
   }
-
-  link.is_archived = !link.is_archived;
-  link.updated_at = new Date().toISOString();
-  db.save();
-  saveRecordToSupabase('application_links', link);
-
-  return res.json(link);
 });
 
 /**
- * Delete resource link
+ * Delete resource link directly from Supabase DB
  * DELETE /api/links/:id
  */
-router.delete('/:id', requireAuth, (req, res) => {
-  const index = db.data.application_links.findIndex(l => l.id === req.params.id);
-  if (index === -1) {
-    return res.status(404).json({ error: 'Link not found' });
+router.delete('/:id', requireAuth, async (req, res) => {
+  const client = getSupabase();
+  if (!client) return res.status(500).json({ error: 'Database client not initialized' });
+
+  try {
+    const { error } = await client
+      .from('application_links')
+      .delete()
+      .eq('id', req.params.id);
+
+    if (error) throw error;
+
+    return res.json({ success: true });
+  } catch (err) {
+    console.error('DELETE /api/links/:id error:', err);
+    return res.status(500).json({ error: err.message });
   }
-
-  db.data.application_links.splice(index, 1);
-  db.save();
-  deleteRecordFromSupabase('application_links', req.params.id);
-
-  return res.json({ success: true });
 });
 
 export default router;

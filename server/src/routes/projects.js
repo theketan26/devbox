@@ -1,8 +1,5 @@
 import express from 'express';
 import { v4 as uuidv4 } from 'uuid';
-import path from 'path';
-import fs from 'fs';
-import { db } from '../db/index.js';
 import { requireAuth } from '../middleware/auth.js';
 import { upload } from '../middleware/upload.js';
 import {
@@ -11,12 +8,8 @@ import {
   deleteFileFromStorage
 } from '../services/storage.js';
 import {
-  fetchProjectsFromSupabase,
-  saveProjectToSupabase,
-  deleteProjectFromSupabase,
-  getSupabaseStatus,
-  saveRecordToSupabase,
-  deleteRecordFromSupabase
+  getSupabase,
+  getSupabaseStatus
 } from '../services/supabase.js';
 
 const router = express.Router();
@@ -31,65 +24,114 @@ router.get('/supabase-status', async (req, res) => {
 });
 
 /**
- * List all projects with nested statistics
+ * List all projects with nested statistics directly from Supabase DB
  * GET /api/projects
  */
 router.get('/', async (req, res) => {
-  // Sync with Supabase DB
-  const rawProjects = await fetchProjectsFromSupabase();
-
-  const projects = rawProjects.map(p => {
-    const apps = db.data.applications.filter(a => a.project_id === p.id);
-    const appIds = new Set(apps.map(a => a.id));
-    const configs = db.data.configs_and_secrets.filter(
-      c => c.project_id === p.id || appIds.has(c.application_id)
-    );
-    const healthChecks = db.data.health_checks.filter(h => appIds.has(h.application_id));
-    const files = db.data.project_files.filter(f => f.project_id === p.id);
-
-    return {
-      ...p,
-      applications: apps,
-      applicationsCount: apps.length,
-      configsCount: configs.length,
-      healthChecksCount: healthChecks.length,
-      filesCount: files.length,
-      healthyCount: healthChecks.filter(h => h.current_status === 'healthy').length,
-      downCount: healthChecks.filter(h => h.current_status === 'down').length
-    };
-  });
-
-  return res.json(projects);
-});
-
-/**
- * Get project details
- * GET /api/projects/:id
- */
-router.get('/:id', (req, res) => {
-  const project = db.data.projects.find(p => p.id === req.params.id);
-  if (!project) {
-    return res.status(404).json({ error: 'Project not found' });
+  const client = getSupabase();
+  if (!client) {
+    return res.status(500).json({ error: 'Database client not initialized' });
   }
 
-  const applications = db.data.applications.filter(a => a.project_id === project.id);
-  const files = db.data.project_files.filter(f => f.project_id === project.id);
+  try {
+    const [
+      { data: rawProjects, error: pErr },
+      { data: allApps, error: aErr },
+      { data: allConfigs, error: cErr },
+      { data: allHealthChecks, error: hErr },
+      { data: allFiles, error: fErr }
+    ] = await Promise.all([
+      client.from('projects').select('*').order('created_at', { ascending: false }),
+      client.from('applications').select('*'),
+      client.from('configs_and_secrets').select('*'),
+      client.from('health_checks').select('*'),
+      client.from('project_files').select('*')
+    ]);
 
-  return res.json({
-    ...project,
-    applications,
-    files
-  });
+    if (pErr) throw pErr;
+
+    const apps = allApps || [];
+    const configs = allConfigs || [];
+    const healthChecks = allHealthChecks || [];
+    const files = allFiles || [];
+
+    const projects = (rawProjects || []).map(p => {
+      const projApps = apps.filter(a => a.project_id === p.id);
+      const appIds = new Set(projApps.map(a => a.id));
+      const projConfigs = configs.filter(
+        c => c.project_id === p.id || appIds.has(c.application_id)
+      );
+      const projHealthChecks = healthChecks.filter(h => appIds.has(h.application_id));
+      const projFiles = files.filter(f => f.project_id === p.id);
+
+      return {
+        ...p,
+        applications: projApps,
+        applicationsCount: projApps.length,
+        configsCount: projConfigs.length,
+        healthChecksCount: projHealthChecks.length,
+        filesCount: projFiles.length,
+        healthyCount: projHealthChecks.filter(h => h.current_status === 'healthy').length,
+        downCount: projHealthChecks.filter(h => h.current_status === 'down').length
+      };
+    });
+
+    return res.json(projects);
+  } catch (err) {
+    console.error('[Supabase DB] Error fetching projects:', err.message);
+    return res.status(500).json({ error: 'Failed to fetch projects from database', message: err.message });
+  }
 });
 
 /**
- * Create new project
+ * Get project details directly from Supabase DB
+ * GET /api/projects/:id
+ */
+router.get('/:id', async (req, res) => {
+  const client = getSupabase();
+  if (!client) {
+    return res.status(500).json({ error: 'Database client not initialized' });
+  }
+
+  try {
+    const [
+      { data: project, error: pErr },
+      { data: applications, error: aErr },
+      { data: files, error: fErr }
+    ] = await Promise.all([
+      client.from('projects').select('*').eq('id', req.params.id).single(),
+      client.from('applications').select('*').eq('project_id', req.params.id).order('created_at', { ascending: false }),
+      client.from('project_files').select('*').eq('project_id', req.params.id).order('created_at', { ascending: false })
+    ]);
+
+    if (pErr || !project) {
+      return res.status(404).json({ error: 'Project not found' });
+    }
+
+    return res.json({
+      ...project,
+      applications: applications || [],
+      files: files || []
+    });
+  } catch (err) {
+    console.error('[Supabase DB] Error fetching project details:', err.message);
+    return res.status(500).json({ error: 'Failed to fetch project from database', message: err.message });
+  }
+});
+
+/**
+ * Create new project directly in Supabase DB
  * POST /api/projects
  */
 router.post('/', requireAuth, async (req, res) => {
   const { name, description } = req.body;
   if (!name || !name.trim()) {
     return res.status(400).json({ error: 'Project name is required' });
+  }
+
+  const client = getSupabase();
+  if (!client) {
+    return res.status(500).json({ error: 'Database client not initialized' });
   }
 
   const now = new Date().toISOString();
@@ -101,91 +143,116 @@ router.post('/', requireAuth, async (req, res) => {
     updated_at: now
   };
 
-  // Persist to Supabase DB and local store
-  const saved = await saveProjectToSupabase(newProject);
+  try {
+    const { data, error } = await client
+      .from('projects')
+      .insert(newProject)
+      .select()
+      .single();
 
-  return res.status(201).json(saved);
+    if (error) throw error;
+    return res.status(201).json(data || newProject);
+  } catch (err) {
+    console.error('[Supabase DB] Error creating project:', err.message);
+    return res.status(500).json({ error: 'Failed to create project in database', message: err.message });
+  }
 });
 
 /**
- * Update project
+ * Update project directly in Supabase DB
  * PUT /api/projects/:id
  */
 router.put('/:id', requireAuth, async (req, res) => {
-  const project = db.data.projects.find(p => p.id === req.params.id);
-  if (!project) {
-    return res.status(404).json({ error: 'Project not found' });
+  const client = getSupabase();
+  if (!client) {
+    return res.status(500).json({ error: 'Database client not initialized' });
   }
 
   const { name, description } = req.body;
-  if (name) project.name = name.trim();
-  if (description !== undefined) project.description = description.trim();
-  project.updated_at = new Date().toISOString();
+  const updatePayload = { updated_at: new Date().toISOString() };
+  if (name !== undefined) updatePayload.name = name.trim();
+  if (description !== undefined) updatePayload.description = description.trim();
 
-  // Persist update to Supabase DB
-  const saved = await saveProjectToSupabase(project);
+  try {
+    const { data, error } = await client
+      .from('projects')
+      .update(updatePayload)
+      .eq('id', req.params.id)
+      .select()
+      .single();
 
-  return res.json(saved);
+    if (error || !data) {
+      return res.status(404).json({ error: 'Project not found or update failed' });
+    }
+
+    return res.json(data);
+  } catch (err) {
+    console.error('[Supabase DB] Error updating project:', err.message);
+    return res.status(500).json({ error: 'Failed to update project in database', message: err.message });
+  }
 });
 
 /**
- * Delete project with cascading
+ * Delete project directly from Supabase DB (cascades automatically via FKs)
  * DELETE /api/projects/:id
  */
 router.delete('/:id', requireAuth, async (req, res) => {
-  const id = req.params.id;
-  const index = db.data.projects.findIndex(p => p.id === id);
-  if (index === -1) {
-    return res.status(404).json({ error: 'Project not found' });
+  const client = getSupabase();
+  if (!client) {
+    return res.status(500).json({ error: 'Database client not initialized' });
   }
 
-  // Find all child applications to cascade delete
-  const childApps = db.data.applications.filter(a => a.project_id === id);
-  const childAppIds = new Set(childApps.map(a => a.id));
+  try {
+    const { error } = await client
+      .from('projects')
+      .delete()
+      .eq('id', req.params.id);
 
-  // Cascades
-  await deleteProjectFromSupabase(id);
-  db.data.applications = db.data.applications.filter(a => a.project_id !== id);
-  db.data.application_deployments = db.data.application_deployments.filter(
-    d => !childAppIds.has(d.application_id)
-  );
-  db.data.configs_and_secrets = db.data.configs_and_secrets.filter(
-    c => c.project_id !== id && !childAppIds.has(c.application_id)
-  );
-  db.data.credential_expirations = db.data.credential_expirations.filter(
-    e => !childAppIds.has(e.application_id)
-  );
-  db.data.application_links = db.data.application_links.filter(
-    l => l.project_id !== id && !childAppIds.has(l.application_id)
-  );
-  db.data.health_checks = db.data.health_checks.filter(
-    h => !childAppIds.has(h.application_id)
-  );
-  db.data.project_files = db.data.project_files.filter(f => f.project_id !== id);
-  if (db.data.application_files) {
-    db.data.application_files = db.data.application_files.filter(f => !childAppIds.has(f.application_id));
+    if (error) throw error;
+    return res.json({ success: true, message: 'Project and associated resources deleted from database' });
+  } catch (err) {
+    console.error('[Supabase DB] Error deleting project:', err.message);
+    return res.status(500).json({ error: 'Failed to delete project from database', message: err.message });
   }
-
-  db.save();
-  return res.json({ success: true, message: 'Project and associated resources deleted' });
 });
 
 /**
- * List project files
+ * List project files directly from Supabase DB
  * GET /api/projects/:id/files
  */
-router.get('/:id/files', (req, res) => {
-  const files = db.data.project_files.filter(f => f.project_id === req.params.id);
-  return res.json(files);
+router.get('/:id/files', async (req, res) => {
+  const client = getSupabase();
+  if (!client) return res.status(500).json({ error: 'Database client not initialized' });
+
+  try {
+    const { data, error } = await client
+      .from('project_files')
+      .select('*')
+      .eq('project_id', req.params.id)
+      .order('created_at', { ascending: false });
+
+    if (error) throw error;
+    return res.json(data || []);
+  } catch (err) {
+    return res.status(500).json({ error: 'Failed to list project files', message: err.message });
+  }
 });
 
 /**
- * Upload project file (Supabase Storage with local fallback)
+ * Upload project file (Stores in Supabase Storage and records in Supabase project_files DB)
  * POST /api/projects/:id/files
  */
 router.post('/:id/files', requireAuth, upload.single('file'), async (req, res) => {
+  const client = getSupabase();
+  if (!client) return res.status(500).json({ error: 'Database client not initialized' });
+
   try {
-    const project = db.data.projects.find(p => p.id === req.params.id);
+    const { data: project } = await client
+      .from('projects')
+      .select('id, name')
+      .eq('id', req.params.id)
+      .single();
+
     if (!project) {
       return res.status(404).json({ error: 'Project not found' });
     }
@@ -208,38 +275,45 @@ router.post('/:id/files', requireAuth, upload.single('file'), async (req, res) =
       title: title || req.file.originalname,
       description: description || '',
       file_name: req.file.originalname,
-      storage_provider: 'supabase',
-      bucket: fileResult.bucket,
       storage_path: fileResult.storagePath,
       file_size_bytes: fileResult.sizeBytes,
       mime_type: fileResult.mimeType,
       created_at: new Date().toISOString()
     };
 
-    if (!db.data.project_files) db.data.project_files = [];
-    db.data.project_files.unshift(newFile);
-    db.save();
-    saveRecordToSupabase('project_files', newFile);
+    const { data: insertedFile, error: insertErr } = await client
+      .from('project_files')
+      .insert(newFile)
+      .select()
+      .single();
 
-    return res.status(201).json(newFile);
+    if (insertErr) throw insertErr;
+    return res.status(201).json(insertedFile || newFile);
   } catch (err) {
-    console.error('Project file upload error:', err);
+    console.error('[Supabase Storage] Project file upload error:', err);
     return res.status(500).json({ error: 'File upload failed', message: err.message });
   }
 });
 
 /**
- * Download signed URL / file info
+ * Download signed URL directly using Supabase file record
  * GET /api/projects/:id/files/:fileId/download
  */
 router.get('/:id/files/:fileId/download', requireAuth, async (req, res) => {
-  if (!db.data.project_files) db.data.project_files = [];
-  const file = db.data.project_files.find(f => f.id === req.params.fileId);
-  if (!file) {
-    return res.status(404).json({ error: 'File not found' });
-  }
+  const client = getSupabase();
+  if (!client) return res.status(500).json({ error: 'Database client not initialized' });
 
   try {
+    const { data: file, error } = await client
+      .from('project_files')
+      .select('*')
+      .eq('id', req.params.fileId)
+      .single();
+
+    if (error || !file) {
+      return res.status(404).json({ error: 'File not found' });
+    }
+
     const downloadInfo = await getStorageDownloadUrl(file);
     return res.json(downloadInfo);
   } catch (err) {
@@ -248,17 +322,24 @@ router.get('/:id/files/:fileId/download', requireAuth, async (req, res) => {
 });
 
 /**
- * Direct file stream / download endpoint (redirects to Supabase signed URL)
+ * Direct file download redirect endpoint
  * GET /api/projects/files/download/:fileId
  */
 router.get('/files/download/:fileId', async (req, res) => {
-  const file = (db.data.project_files || []).find(f => f.id === req.params.fileId) ||
-               (db.data.application_files || []).find(f => f.id === req.params.fileId);
-  if (!file) {
-    return res.status(404).send('File not found');
-  }
+  const client = getSupabase();
+  if (!client) return res.status(500).send('Database not initialized');
 
   try {
+    const { data: file } = await client
+      .from('project_files')
+      .select('*')
+      .eq('id', req.params.fileId)
+      .single();
+
+    if (!file) {
+      return res.status(404).send('File not found');
+    }
+
     const downloadInfo = await getStorageDownloadUrl(file);
     if (downloadInfo?.downloadUrl) {
       return res.redirect(downloadInfo.downloadUrl);
@@ -270,22 +351,31 @@ router.get('/files/download/:fileId', async (req, res) => {
 });
 
 /**
- * Delete project file
+ * Delete project file from both Supabase Storage and project_files DB table
  * DELETE /api/projects/:id/files/:fileId
  */
 router.delete('/:id/files/:fileId', requireAuth, async (req, res) => {
-  if (!db.data.project_files) db.data.project_files = [];
-  const index = db.data.project_files.findIndex(f => f.id === req.params.fileId);
-  if (index === -1) {
-    return res.status(404).json({ error: 'File not found' });
+  const client = getSupabase();
+  if (!client) return res.status(500).json({ error: 'Database client not initialized' });
+
+  try {
+    const { data: file } = await client
+      .from('project_files')
+      .select('*')
+      .eq('id', req.params.fileId)
+      .single();
+
+    if (!file) {
+      return res.status(404).json({ error: 'File not found' });
+    }
+
+    await deleteFileFromStorage(file);
+    await client.from('project_files').delete().eq('id', req.params.fileId);
+
+    return res.json({ success: true, message: 'File deleted successfully from database and storage' });
+  } catch (err) {
+    return res.status(500).json({ error: 'Failed to delete file', message: err.message });
   }
-
-  const [removedFile] = db.data.project_files.splice(index, 1);
-  db.save();
-  deleteRecordFromSupabase('project_files', req.params.fileId);
-  await deleteFileFromStorage(removedFile);
-
-  return res.json({ success: true, message: 'File deleted successfully' });
 });
 
 export default router;

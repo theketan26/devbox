@@ -1,8 +1,7 @@
 import axios from 'axios';
 import { v4 as uuidv4 } from 'uuid';
-import { db } from '../db/index.js';
 import { sendWhatsAppAlert } from '../utils/whatsapp.js';
-import { saveRecordToSupabase } from './supabase.js';
+import { getSupabase } from './supabase.js';
 
 function formatDuration(ms) {
   const seconds = Math.floor(ms / 1000);
@@ -32,12 +31,23 @@ function matchesExpectedJson(actual, expected) {
 }
 
 /**
- * Execute a single health check by ID
+ * Execute a single health check by ID directly against Supabase DB
  * @param {string} checkId
  */
 export async function executeHealthCheck(checkId) {
-  const check = db.data.health_checks.find(c => c.id === checkId);
-  if (!check) return null;
+  const client = getSupabase();
+  if (!client) {
+    console.warn('[HealthChecker] Supabase client not available');
+    return null;
+  }
+
+  const { data: check, error: cErr } = await client
+    .from('health_checks')
+    .select('*')
+    .eq('id', checkId)
+    .single();
+
+  if (cErr || !check) return null;
 
   if (check.is_maintenance_mode) {
     console.log(`[HealthChecker] Skipping ${check.name} - maintenance mode active`);
@@ -62,7 +72,6 @@ export async function executeHealthCheck(checkId) {
     });
 
     statusCode = res.status;
-    const responseTime = Date.now() - startTime;
 
     // Validate Status Code
     if (statusCode === (check.expected_status || 200)) {
@@ -71,7 +80,7 @@ export async function executeHealthCheck(checkId) {
       if (check.expected_json_payload && Object.keys(check.expected_json_payload).length > 0) {
         if (!matchesExpectedJson(res.data, check.expected_json_payload)) {
           isSuccess = false;
-          errorMessage = `Response body did not match expected JSON payload pattern`;
+          errorMessage = 'Response body did not match expected JSON payload pattern';
         }
       }
     } else {
@@ -87,7 +96,7 @@ export async function executeHealthCheck(checkId) {
   const responseTimeMs = Date.now() - startTime;
   const now = new Date();
 
-  // Log execution
+  // Log execution directly in Supabase
   const logEntry = {
     id: uuidv4(),
     health_check_id: check.id,
@@ -97,25 +106,19 @@ export async function executeHealthCheck(checkId) {
     error_message: errorMessage,
     checked_at: now.toISOString()
   };
-  db.data.health_check_logs.push(logEntry);
-  saveRecordToSupabase('health_check_logs', logEntry);
 
-  // Keep logs at max 50 per check to prevent bloat
-  const checkLogs = db.data.health_check_logs.filter(l => l.health_check_id === check.id);
-  if (checkLogs.length > 50) {
-    const excess = checkLogs.length - 50;
-    const toRemoveIds = new Set(checkLogs.slice(0, excess).map(l => l.id));
-    db.data.health_check_logs = db.data.health_check_logs.filter(l => !toRemoveIds.has(l.id));
-  }
+  await client.from('health_check_logs').insert(logEntry);
 
-  // Handle state transitions, alert throttling, and recovery
+  // Prepare check updates
   const wasDown = check.current_status === 'down';
-  check.last_checked_at = now.toISOString();
-  check.last_status_code = statusCode;
-  check.last_response_time_ms = responseTimeMs;
+  const updates = {
+    last_checked_at: now.toISOString(),
+    last_status_code: statusCode,
+    last_response_time_ms: responseTimeMs
+  };
 
   if (isSuccess) {
-    check.current_status = 'healthy';
+    updates.current_status = 'healthy';
 
     // Automated Recovery Notification
     if (wasDown && check.down_since) {
@@ -129,14 +132,15 @@ export async function executeHealthCheck(checkId) {
       sendWhatsAppAlert(recoveryMessage).catch(console.error);
     }
 
-    check.consecutive_failures = 0;
-    check.down_since = null;
+    updates.consecutive_failures = 0;
+    updates.down_since = null;
   } else {
-    check.current_status = 'down';
-    check.consecutive_failures = (check.consecutive_failures || 0) + 1;
+    updates.current_status = 'down';
+    const failures = (check.consecutive_failures || 0) + 1;
+    updates.consecutive_failures = failures;
 
     if (!check.down_since) {
-      check.down_since = now.toISOString();
+      updates.down_since = now.toISOString();
     }
 
     // Incident Throttling: trigger after 2 consecutive failures, with 60-minute cooldown
@@ -144,42 +148,51 @@ export async function executeHealthCheck(checkId) {
     const lastAlerted = check.last_alerted_at ? new Date(check.last_alerted_at).getTime() : 0;
     const timeSinceLastAlert = now.getTime() - lastAlerted;
 
-    if (check.consecutive_failures >= 2 && timeSinceLastAlert > cooldownMs) {
-      check.last_alerted_at = now.toISOString();
-      const alertMsg = `🚨 [Dev Box INCIDENT ALERT]\nService: ${check.name}\nURL: ${check.endpoint_url}\nFailures: ${check.consecutive_failures} consecutive\nError: ${errorMessage}\nStatus Code: ${statusCode}\nTime: ${now.toLocaleTimeString()}\n(Alert throttled for 60m)`;
+    if (failures >= 2 && timeSinceLastAlert > cooldownMs) {
+      updates.last_alerted_at = now.toISOString();
+      const alertMsg = `🚨 [Dev Box INCIDENT ALERT]\nService: ${check.name}\nURL: ${check.endpoint_url}\nFailures: ${failures} consecutive\nError: ${errorMessage}\nStatus Code: ${statusCode}\nTime: ${now.toLocaleTimeString()}\n(Alert throttled for 60m)`;
       
       console.log(`[HealthChecker] Triggering incident alert for ${check.name}`);
       sendWhatsAppAlert(alertMsg).catch(console.error);
     }
   }
 
-  db.save();
-  saveRecordToSupabase('health_checks', check);
+  await client.from('health_checks').update(updates).eq('id', check.id);
 
   return {
     checkId: check.id,
     name: check.name,
-    currentStatus: check.current_status,
+    currentStatus: updates.current_status,
     statusCode,
     responseTimeMs,
     isSuccess,
     errorMessage,
-    consecutiveFailures: check.consecutive_failures
+    consecutiveFailures: updates.consecutive_failures || 0
   };
 }
 
 /**
- * Execute all active health checks (invoked by cron or background runner)
+ * Execute all active health checks directly against Supabase DB
  */
 export async function runAllDueHealthChecks() {
-  const activeChecks = db.data.health_checks.filter(c => c.is_active && !c.is_maintenance_mode);
+  const client = getSupabase();
+  if (!client) return [];
+
+  const { data: activeChecks, error } = await client
+    .from('health_checks')
+    .select('*')
+    .eq('is_active', true)
+    .eq('is_maintenance_mode', false);
+
+  if (error || !activeChecks) return [];
+
   console.log(`[HealthChecker] Running checks for ${activeChecks.length} endpoints...`);
 
   const results = [];
   for (const check of activeChecks) {
     try {
       const res = await executeHealthCheck(check.id);
-      results.push(res);
+      if (res) results.push(res);
     } catch (err) {
       console.error(`[HealthChecker] Error running check ${check.name}:`, err.message);
     }

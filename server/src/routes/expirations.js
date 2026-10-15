@@ -1,61 +1,87 @@
 import express from 'express';
 import { v4 as uuidv4 } from 'uuid';
-import { db } from '../db/index.js';
 import { requireAuth } from '../middleware/auth.js';
-import { saveRecordToSupabase, deleteRecordFromSupabase } from '../services/supabase.js';
+import { getSupabase } from '../services/supabase.js';
 
 const router = express.Router();
 
 /**
- * List credential expirations with calculated urgency status
+ * List credential expirations with calculated urgency status directly from Supabase DB
  * GET /api/expirations
  */
-router.get('/', (req, res) => {
+router.get('/', async (req, res) => {
+  const client = getSupabase();
+  if (!client) return res.status(500).json({ error: 'Database client not initialized' });
+
   const { applicationId } = req.query;
-  let items = db.data.credential_expirations;
 
-  if (applicationId) {
-    items = items.filter(e => e.application_id === applicationId);
-  }
-
-  const now = Date.now();
-  const enriched = items.map(item => {
-    const expiresTime = new Date(item.expires_at).getTime();
-    const diffMs = expiresTime - now;
-    const daysRemaining = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
-
-    let status = 'SAFE';
-    if (daysRemaining <= 0) {
-      status = 'EXPIRED';
-    } else if (daysRemaining <= 7) {
-      status = 'CRITICAL';
-    } else if (daysRemaining <= (item.alert_days_before || 14)) {
-      status = 'WARNING';
+  try {
+    let expQuery = client.from('credential_expirations').select('*').order('expires_at', { ascending: true });
+    if (applicationId) {
+      expQuery = expQuery.eq('application_id', applicationId);
     }
 
-    const app = db.data.applications.find(a => a.id === item.application_id);
-    const project = app ? db.data.projects.find(p => p.id === app.project_id) : null;
+    const [
+      { data: rawItems, error: eErr },
+      { data: allApps, error: aErr },
+      { data: allProjects, error: pErr }
+    ] = await Promise.all([
+      expQuery,
+      client.from('applications').select('*'),
+      client.from('projects').select('*')
+    ]);
 
-    return {
-      ...item,
-      daysRemaining,
-      status,
-      applicationName: app ? app.name : 'Unknown Application',
-      projectName: project ? project.name : 'Unknown Project'
-    };
-  });
+    if (eErr) throw eErr;
 
-  // Sort by urgency (expired & critical first)
-  enriched.sort((a, b) => a.daysRemaining - b.daysRemaining);
+    const items = rawItems || [];
+    const apps = allApps || [];
+    const projects = allProjects || [];
 
-  return res.json(enriched);
+    const now = Date.now();
+    const enriched = items.map(item => {
+      const expiresTime = new Date(item.expires_at).getTime();
+      const diffMs = expiresTime - now;
+      const daysRemaining = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
+
+      let status = 'SAFE';
+      if (daysRemaining <= 0) {
+        status = 'EXPIRED';
+      } else if (daysRemaining <= 7) {
+        status = 'CRITICAL';
+      } else if (daysRemaining <= (item.alert_days_before || 14)) {
+        status = 'WARNING';
+      }
+
+      const app = apps.find(a => a.id === item.application_id);
+      const project = app ? projects.find(p => p.id === app.project_id) : null;
+
+      return {
+        ...item,
+        daysRemaining,
+        status,
+        applicationName: app ? app.name : 'Unknown Application',
+        projectName: project ? project.name : 'Unknown Project'
+      };
+    });
+
+    // Sort by urgency (expired & critical first)
+    enriched.sort((a, b) => a.daysRemaining - b.daysRemaining);
+
+    return res.json(enriched);
+  } catch (err) {
+    console.error('GET /api/expirations error:', err);
+    return res.status(500).json({ error: err.message });
+  }
 });
 
 /**
- * Create credential expiration record
+ * Create credential expiration record directly in Supabase DB
  * POST /api/expirations
  */
-router.post('/', requireAuth, (req, res) => {
+router.post('/', requireAuth, async (req, res) => {
+  const client = getSupabase();
+  if (!client) return res.status(500).json({ error: 'Database client not initialized' });
+
   const { application_id, name, credential_type, expires_at, alert_days_before = 14, notes } = req.body;
 
   if (!application_id || !name || !expires_at || !credential_type) {
@@ -74,28 +100,43 @@ router.post('/', requireAuth, (req, res) => {
     created_at: new Date().toISOString()
   };
 
-  db.data.credential_expirations.push(newExp);
-  db.save();
-  saveRecordToSupabase('credential_expirations', newExp);
+  try {
+    const { data, error } = await client
+      .from('credential_expirations')
+      .insert(newExp)
+      .select()
+      .single();
 
-  return res.status(201).json(newExp);
+    if (error) throw error;
+
+    return res.status(201).json(data || newExp);
+  } catch (err) {
+    console.error('POST /api/expirations error:', err);
+    return res.status(500).json({ error: err.message });
+  }
 });
 
 /**
- * Delete credential expiration record
+ * Delete credential expiration record directly from Supabase DB
  * DELETE /api/expirations/:id
  */
-router.delete('/:id', requireAuth, (req, res) => {
-  const index = db.data.credential_expirations.findIndex(e => e.id === req.params.id);
-  if (index === -1) {
-    return res.status(404).json({ error: 'Expiration item not found' });
+router.delete('/:id', requireAuth, async (req, res) => {
+  const client = getSupabase();
+  if (!client) return res.status(500).json({ error: 'Database client not initialized' });
+
+  try {
+    const { error } = await client
+      .from('credential_expirations')
+      .delete()
+      .eq('id', req.params.id);
+
+    if (error) throw error;
+
+    return res.json({ success: true });
+  } catch (err) {
+    console.error('DELETE /api/expirations/:id error:', err);
+    return res.status(500).json({ error: err.message });
   }
-
-  db.data.credential_expirations.splice(index, 1);
-  db.save();
-  deleteRecordFromSupabase('credential_expirations', req.params.id);
-
-  return res.json({ success: true });
 });
 
 export default router;
