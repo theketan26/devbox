@@ -1,0 +1,23 @@
+# Server Dependencies
+node_modules/
+
+# Secrets & Environment
+.env
+.env.*
+!.env.example
+
+# Runtime & Logs
+logs/
+*.log
+
+# Local data & database files (Supabase PostgreSQL is source of truth)
+data/
+*.db
+*.db.json
+*.sqlite
+*.sqlite3
+
+# Uploads / Cache
+uploads/
+tmp/
+temp/

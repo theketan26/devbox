@@ -1,0 +1,68 @@
+# ==============================================================================
+# DEVBOX MONOREPO .GITIGNORE
+# ==============================================================================
+
+# Dependencies
+node_modules/
+*/node_modules/
+
+# Environment Variables & Secrets (CRITICAL: Do NOT commit)
+.env
+.env.*
+!.env.example
+*.env
+server/.env
+client/.env
+
+# Build & Output Artifacts
+dist/
+dist-ssr/
+build/
+client/dist/
+*.local
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Database & Local Storage (Supabase is the DB source of truth)
+server/data/
+*.db
+*.db.json
+*.sqlite
+*.sqlite3
+
+# Uploads / Storage Cache
+uploads/
+storage/
+
+# Editor & IDE Directories
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+*.swo
+*.swp
+
+# OS System Files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Temporary & Cache Directories
+.temp/
+.tmp/
+tmp/
+temp/
+.cache/
+.parcel-cache/
+.turbo/

@@ -1,0 +1,26 @@
+{
+  "name": "devbox-server",
+  "version": "1.0.0",
+  "description": "Dev Box Express Backend API",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "test": "NODE_ENV=test node tests/api.test.js"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.117.3",
+    "axios": "^1.7.7",
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.1",
+    "jsonwebtoken": "^9.0.2",
+    "multer": "^1.4.5-lts.1",
+    "otplib": "^12.0.1",
+    "pg": "^8.13.1",
+    "qrcode": "^1.5.4",
+    "uuid": "^10.0.0"
+  }
+}
