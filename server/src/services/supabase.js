@@ -8,27 +8,30 @@ let pgCronsStore = [];
 
 // Initialize Supabase Client if credentials are provided
 export function initSupabase() {
-  if (config.supabaseUrl && config.supabaseServiceRoleKey) {
+  const url = config.supabaseUrl || 'https://tocdtmbnghwamhodkbel.supabase.co';
+  const key = config.supabaseServiceRoleKey || 'sb_publishable_6QPVr0zdlPNYvzXTErhZ8g_0MxBuMAM';
+
+  if (url && key) {
     try {
-      supabaseClient = createClient(config.supabaseUrl, config.supabaseServiceRoleKey, {
+      supabaseClient = createClient(url, key, {
         auth: {
           persistSession: false,
           autoRefreshToken: false
         }
       });
-      console.log(`[Supabase] SDK initialized with endpoint: ${config.supabaseUrl}`);
+      console.log(`[Supabase] SDK initialized with endpoint: ${url}`);
     } catch (err) {
-      console.warn('[Supabase] Initialization failed:', err.message);
+      console.error('[Supabase] Initialization failed:', err.message);
       supabaseClient = null;
     }
   } else {
-    console.log('[Supabase] Credentials not configured.');
+    console.warn('[Supabase] Missing credentials for initialization.');
   }
   return supabaseClient;
 }
 
 export function getSupabase() {
-  if (!supabaseClient && config.supabaseUrl && config.supabaseServiceRoleKey) {
+  if (!supabaseClient) {
     initSupabase();
   }
   return supabaseClient;

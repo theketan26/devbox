@@ -31,7 +31,7 @@ services:
 
       # AES-256-GCM Master Key (64-character hex string)
       - key: AES_MASTER_KEY
-        sync: false
+        value: vMyvvXhLsy9inBx9U72X3M7uZdyE73fmCdtwgtfYw7ab0kU9AaiUeWN1q2tZXupo
 
       # CLI & Cron Secrets
       - key: DEVBOX_CLI_MASTER_KEY
@@ -41,9 +41,9 @@ services:
 
       # Supabase PostgreSQL Database & Storage
       - key: SUPABASE_URL
-        sync: false # e.g. https://tocdtmbnghwamhodkbel.supabase.co
+        value: https://tocdtmbnghwamhodkbel.supabase.co
       - key: SUPABASE_SERVICE_ROLE_KEY
-        sync: false
+        value: sb_publishable_6QPVr0zdlPNYvzXTErhZ8g_0MxBuMAM
       - key: SUPABASE_STORAGE_BUCKET
         value: devbox-files
 
