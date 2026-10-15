@@ -28,11 +28,6 @@ WORKDIR /app
 ENV NODE_ENV=production
 # Render defaults to 10000
 ENV PORT=10000
-ENV SUPABASE_URL=https://tocdtmbnghwamhodkbel.supabase.co
-ENV SUPABASE_SERVICE_ROLE_KEY=sb_publishable_6QPVr0zdlPNYvzXTErhZ8g_0MxBuMAM
-ENV AES_MASTER_KEY=vMyvvXhLsy9inBx9U72X3M7uZdyE73fmCdtwgtfYw7ab0kU9AaiUeWN1q2tZXupo
-ENV MASTER_PASSWORD=K@s112326
-ENV MASTER_TOTP_SECRET=JBSWY3DPEHPK3PXP
 
 # Install curl for container health checks
 RUN apk add --no-cache curl

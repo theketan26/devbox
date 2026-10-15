@@ -8,8 +8,8 @@ let pgCronsStore = [];
 
 // Initialize Supabase Client if credentials are provided
 export function initSupabase() {
-  const url = config.supabaseUrl || 'https://tocdtmbnghwamhodkbel.supabase.co';
-  const key = config.supabaseServiceRoleKey || 'sb_publishable_6QPVr0zdlPNYvzXTErhZ8g_0MxBuMAM';
+  const url = config.supabaseUrl;
+  const key = config.supabaseServiceRoleKey;
 
   if (url && key) {
     try {
@@ -25,13 +25,14 @@ export function initSupabase() {
       supabaseClient = null;
     }
   } else {
-    console.warn('[Supabase] Missing credentials for initialization.');
+    console.warn('[Supabase] SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY (or SUPABASE_KEY/SUPABASE_ANON_KEY) not provided in environment variables.');
+    supabaseClient = null;
   }
   return supabaseClient;
 }
 
 export function getSupabase() {
-  if (!supabaseClient) {
+  if (!supabaseClient && config.supabaseUrl && config.supabaseServiceRoleKey) {
     initSupabase();
   }
   return supabaseClient;
