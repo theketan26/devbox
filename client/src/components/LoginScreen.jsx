@@ -2,15 +2,15 @@ import React, { useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { api } from '../services/api.js';
 import { setChallenge, loginSuccess, setError, setLoading, resetLoginStep } from '../store/authSlice.js';
-import { Lock, Shield, KeyRound, ArrowRight, CheckCircle2, AlertCircle, RefreshCw, Zap } from 'lucide-react';
+import { ArrowRight, AlertCircle, RefreshCw, Zap } from 'lucide-react';
 
 export default function LoginScreen() {
   const dispatch = useDispatch();
-  const { loginStep, challengeTicket, qrCode, totpSecret, demoCodeHint, error, loading } = useSelector(
+  const { loginStep, challengeTicket, error, loading } = useSelector(
     state => state.auth
   );
 
-  const [password, setPassword] = useState('admin123');
+  const [password, setPassword] = useState('');
   const [totpCode, setTotpCode] = useState('');
 
   const handlePasswordSubmit = async (e) => {
@@ -40,12 +40,6 @@ export default function LoginScreen() {
     }
   };
 
-  const handleQuickFill = () => {
-    if (demoCodeHint) {
-      setTotpCode(demoCodeHint);
-    }
-  };
-
   return (
     <div className="neo-grid-bg" style={{
       minHeight: '100vh',
@@ -56,7 +50,7 @@ export default function LoginScreen() {
     }}>
       <div className="neo-card" style={{
         width: '100%',
-        maxWidth: '480px',
+        maxWidth: '460px',
         padding: '36px',
         boxShadow: 'var(--neo-shadow-xl)'
       }}>
@@ -83,12 +77,12 @@ export default function LoginScreen() {
         {/* Brand header */}
         <div style={{ marginBottom: '24px' }}>
           <h1 style={{ fontSize: '2rem', marginBottom: '8px' }}>
-            {loginStep === 'credentials' ? 'DEV BOX ACCESS' : '2FA CHALLENGE'}
+            {loginStep === 'credentials' ? 'DEV BOX ACCESS' : '2FA VERIFICATION'}
           </h1>
           <p style={{ fontSize: '0.9rem', color: 'var(--neo-black)', opacity: 0.75, fontWeight: 700 }}>
             {loginStep === 'credentials'
-              ? 'Enter master password to initiate 2FA authentication.'
-              : 'Scan QR code in Authenticator & enter 6-digit TOTP code.'}
+              ? 'Enter master password to initiate authentication.'
+              : 'Enter the 6-digit code currently shown in your Authenticator app.'}
           </p>
         </div>
 
@@ -126,15 +120,12 @@ export default function LoginScreen() {
                 className="neo-input font-mono"
                 autoFocus
               />
-              <div style={{ fontSize: '0.76rem', color: 'var(--neo-black)', opacity: 0.75, fontWeight: 700, marginTop: '8px' }}>
-                Default demo password: <span className="neo-badge neo-badge-yellow font-mono" style={{ padding: '2px 6px', fontSize: '0.72rem' }}>admin123</span>
-              </div>
             </div>
 
             <button
               id="btn-login-submit"
               type="submit"
-              disabled={loading}
+              disabled={loading || !password}
               className="btn-neo-primary"
               style={{ width: '100%', padding: '13px' }}
             >
@@ -153,44 +144,14 @@ export default function LoginScreen() {
           </form>
         ) : (
           <form onSubmit={handle2FASubmit}>
-            {qrCode && (
-              <div style={{ textAlign: 'center', marginBottom: '20px' }}>
-                <div style={{
-                  display: 'inline-block',
-                  background: '#FFF',
-                  padding: '12px',
-                  border: 'var(--neo-border-4)',
-                  boxShadow: '6px 6px 0px #000'
-                }}>
-                  <img src={qrCode} alt="TOTP QR Code" style={{ width: '150px', height: '150px', display: 'block' }} />
-                </div>
-                <div style={{ marginTop: '10px', fontSize: '0.78rem', fontWeight: 900 }}>
-                  SECRET KEY: <code className="font-mono" style={{ background: 'var(--neo-violet)', border: '1px solid #000', padding: '2px 6px' }}>{totpSecret}</code>
-                </div>
-              </div>
-            )}
-
-            <div style={{ marginBottom: '18px' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-                <label style={{ fontSize: '0.84rem', fontWeight: 900, textTransform: 'uppercase' }}>
-                  6-Digit TOTP Code
-                </label>
-                {demoCodeHint && (
-                  <button
-                    type="button"
-                    id="btn-quick-fill-otp"
-                    onClick={handleQuickFill}
-                    className="neo-badge neo-badge-yellow"
-                    style={{ cursor: 'pointer', padding: '2px 8px', fontSize: '0.72rem' }}
-                  >
-                    Quick-Fill ({demoCodeHint})
-                  </button>
-                )}
-              </div>
+            <div style={{ marginBottom: '24px' }}>
+              <label style={{ display: 'block', fontSize: '0.84rem', fontWeight: 900, textTransform: 'uppercase', marginBottom: '8px' }}>
+                6-Digit Authenticator Code
+              </label>
               <input
                 id="input-totp-code"
                 type="text"
-                maxLength={10}
+                maxLength={6}
                 value={totpCode}
                 onChange={(e) => setTotpCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
                 onPaste={(e) => {
@@ -202,10 +163,10 @@ export default function LoginScreen() {
                 placeholder="000000"
                 className="neo-input font-mono"
                 style={{
-                  fontSize: '1.6rem',
+                  fontSize: '1.8rem',
                   letterSpacing: '0.35em',
                   textAlign: 'center',
-                  padding: '12px',
+                  padding: '14px',
                   fontWeight: 900
                 }}
                 autoFocus
@@ -215,7 +176,10 @@ export default function LoginScreen() {
             <div style={{ display: 'flex', gap: '12px' }}>
               <button
                 type="button"
-                onClick={() => dispatch(resetLoginStep())}
+                onClick={() => {
+                  setTotpCode('');
+                  dispatch(resetLoginStep());
+                }}
                 className="btn-neo-outline"
                 style={{ flex: 1 }}
               >
