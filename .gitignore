@@ -21,6 +21,7 @@ build/
 client/dist/
 *.local
 totp-qr.png
+totp-qr.html
 
 # Logs
 logs/

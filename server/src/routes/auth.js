@@ -26,11 +26,7 @@ router.post('/login', async (req, res) => {
     { expiresIn: '5m' }
   );
 
-  const otpAuthUrl = authenticator.keyuri(
-    'master@devbox.local',
-    'DevBox Infrastructure',
-    config.masterTotpSecret
-  );
+  const otpAuthUrl = `otpauth://totp/DevBox:master@devbox.local?secret=${config.masterTotpSecret}&issuer=DevBox`;
 
   let qrCodeDataUrl = '';
   try {
