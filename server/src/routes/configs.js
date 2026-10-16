@@ -5,6 +5,7 @@ import { calculateParity } from '../utils/parity.js';
 import { exportDotEnv, exportJSON, exportDockerCompose, exportK8sSecret } from '../utils/exporter.js';
 import { requireAuth } from '../middleware/auth.js';
 import { getSupabase } from '../services/supabase.js';
+import { isValidUuid, cleanUuid } from '../utils/validation.js';
 
 const router = express.Router();
 
@@ -21,13 +22,13 @@ router.get('/', async (req, res) => {
   try {
     let query = client.from('configs_and_secrets').select('*').order('created_at', { ascending: false });
 
-    if (projectId) {
+    if (isValidUuid(projectId)) {
       query = query.eq('project_id', projectId);
     }
-    if (applicationId) {
+    if (isValidUuid(applicationId)) {
       query = query.eq('application_id', applicationId);
     }
-    if (environment) {
+    if (environment && environment !== 'undefined' && environment !== 'null' && environment !== 'all') {
       query = query.eq('environment', environment);
     }
 
@@ -93,9 +94,9 @@ router.get('/parity', async (req, res) => {
   try {
     let query = client.from('configs_and_secrets').select('*');
 
-    if (applicationId) {
+    if (isValidUuid(applicationId)) {
       query = query.eq('application_id', applicationId);
-    } else if (projectId) {
+    } else if (isValidUuid(projectId)) {
       query = query.eq('project_id', projectId);
     }
 
@@ -123,9 +124,9 @@ router.get('/export', async (req, res) => {
   try {
     let query = client.from('configs_and_secrets').select('*').eq('environment', environment);
 
-    if (applicationId) {
+    if (isValidUuid(applicationId)) {
       query = query.eq('application_id', applicationId);
-    } else if (projectId) {
+    } else if (isValidUuid(projectId)) {
       query = query.eq('project_id', projectId);
     }
 
@@ -537,7 +538,7 @@ router.post('/import', requireAuth, async (req, res) => {
 
       // Strip enclosing single or double quotes
       if ((rawVal.startsWith('"') && rawVal.endsWith('"')) ||
-          (rawVal.startsWith("'") && rawVal.endsWith("'"))) {
+        (rawVal.startsWith("'") && rawVal.endsWith("'"))) {
         rawVal = rawVal.substring(1, rawVal.length - 1);
       }
 
