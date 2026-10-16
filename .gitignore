@@ -20,6 +20,7 @@ dist-ssr/
 build/
 client/dist/
 *.local
+totp-qr.png
 
 # Logs
 logs/

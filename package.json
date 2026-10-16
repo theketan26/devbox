@@ -7,7 +7,9 @@
     "dev:server": "npm run dev --prefix server",
     "dev:client": "npm run dev --prefix client",
     "build": "npm run build --prefix client",
-    "test": "npm run test --prefix server"
+    "test": "npm run test --prefix server",
+    "totp": "node server/scripts/generate-totp-qr.js",
+    "totp:qr": "node server/scripts/generate-totp-qr.js"
   },
   "devDependencies": {
     "concurrently": "^9.2.5"

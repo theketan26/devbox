@@ -7,7 +7,9 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
-    "test": "NODE_ENV=test node tests/api.test.js"
+    "test": "NODE_ENV=test node tests/api.test.js",
+    "totp": "node scripts/generate-totp-qr.js",
+    "totp:qr": "node scripts/generate-totp-qr.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.117.3",
