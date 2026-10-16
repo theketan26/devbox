@@ -1,11 +1,16 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../services/api.js';
+import ConfirmModal from './ConfirmModal.jsx';
 import { ShieldAlert, Plus, Trash2, Calendar, AlertTriangle, CheckCircle, RefreshCw, Zap } from 'lucide-react';
 
 export default function ExpirationsTracker({ activeApplicationId }) {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(false);
   const [isAddOpen, setIsAddOpen] = useState(false);
+
+  // Delete confirmation modal state
+  const [itemToDelete, setItemToDelete] = useState(null);
+  const [deletingItem, setDeletingItem] = useState(false);
 
   // Form state
   const [name, setName] = useState('');
@@ -33,13 +38,17 @@ export default function ExpirationsTracker({ activeApplicationId }) {
     return () => clearInterval(interval);
   }, [activeApplicationId]);
 
-  const handleDelete = async (id, itemName) => {
-    if (!window.confirm(`Delete expiration tracker for ${itemName}?`)) return;
+  const handleConfirmDelete = async () => {
+    if (!itemToDelete) return;
+    setDeletingItem(true);
     try {
-      await api.expirations.delete(id);
-      setItems(prev => prev.filter(i => i.id !== id));
+      await api.expirations.delete(itemToDelete.id);
+      setItems(prev => prev.filter(i => i.id !== itemToDelete.id));
+      setItemToDelete(null);
     } catch (err) {
       alert(`Delete failed: ${err.message}`);
+    } finally {
+      setDeletingItem(false);
     }
   };
 
@@ -164,7 +173,7 @@ export default function ExpirationsTracker({ activeApplicationId }) {
                       </td>
                       <td style={{ textAlign: 'right' }}>
                         <button
-                          onClick={() => handleDelete(item.id, item.name)}
+                          onClick={() => setItemToDelete({ id: item.id, name: item.name })}
                           className="btn-neo-danger"
                           style={{ padding: '5px 10px' }}
                         >
@@ -284,6 +293,18 @@ export default function ExpirationsTracker({ activeApplicationId }) {
           </div>
         </div>
       )}
+
+      {/* Delete Confirmation Modal */}
+      <ConfirmModal
+        isOpen={Boolean(itemToDelete)}
+        title="Delete Expiration Tracker"
+        message={`Are you sure you want to stop tracking expiration for "${itemToDelete?.name}"?`}
+        warningNote="This tracker and its automated alert configuration will be permanently deleted."
+        confirmText="Yes, Delete Tracker"
+        loading={deletingItem}
+        onConfirm={handleConfirmDelete}
+        onClose={() => setItemToDelete(null)}
+      />
     </div>
   );
 }

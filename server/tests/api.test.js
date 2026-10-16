@@ -66,7 +66,7 @@ async function runTests() {
 
   // 2. Auth Login Step 1
   console.log('Testing Master Password Login (2FA Challenge)...');
-  const loginRes = await request('POST', '/api/auth/login', { password: 'admin123' });
+  const loginRes = await request('POST', '/api/auth/login', { password: config.masterPassword || 'admin123' });
   assert.strictEqual(loginRes.status, 200);
   assert(loginRes.data.challengeTicket, 'Missing challenge ticket');
   const ticket = loginRes.data.challengeTicket;

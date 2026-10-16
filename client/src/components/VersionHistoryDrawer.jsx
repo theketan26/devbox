@@ -1,22 +1,23 @@
 import React, { useState } from 'react';
 import { api } from '../services/api.js';
+import ConfirmModal from './ConfirmModal.jsx';
 import { History, RotateCcw, X, Check, Shield } from 'lucide-react';
 
 export default function VersionHistoryDrawer({ config, onClose, onRollbackSuccess }) {
   const [rollingBack, setRollingBack] = useState(false);
   const [successMsg, setSuccessMsg] = useState(null);
+  const [verToRollback, setVerToRollback] = useState(null);
 
   if (!config) return null;
 
-  const handleRollback = async (versionNumber) => {
-    if (!window.confirm(`Are you sure you want to rollback ${config.key} to version ${versionNumber}?`)) {
-      return;
-    }
+  const handleConfirmRollback = async () => {
+    if (!verToRollback) return;
 
     setRollingBack(true);
     try {
-      const res = await api.configs.rollback(config.id, versionNumber);
+      const res = await api.configs.rollback(config.id, verToRollback);
       setSuccessMsg(res.message);
+      setVerToRollback(null);
       setTimeout(() => {
         onRollbackSuccess();
         onClose();
@@ -117,7 +118,7 @@ export default function VersionHistoryDrawer({ config, onClose, onRollbackSucces
                       </span>
                     ) : (
                       <button
-                        onClick={() => handleRollback(ver.version_number)}
+                        onClick={() => setVerToRollback(ver.version_number)}
                         disabled={rollingBack}
                         className="btn-neo-outline"
                         style={{ padding: '6px 12px', fontSize: '0.78rem' }}
@@ -133,6 +134,19 @@ export default function VersionHistoryDrawer({ config, onClose, onRollbackSucces
           </div>
         </div>
       </div>
+
+      {/* Rollback Confirmation Modal */}
+      <ConfirmModal
+        isOpen={Boolean(verToRollback)}
+        title="Rollback Secret Version"
+        message={`Are you sure you want to rollback "${config.key}" to version ${verToRollback}?`}
+        warningNote="This will create a new immutable version with the decrypted value restored from that historical revision."
+        confirmText="Yes, Rollback"
+        danger={false}
+        loading={rollingBack}
+        onConfirm={handleConfirmRollback}
+        onClose={() => setVerToRollback(null)}
+      />
     </div>
   );
 }

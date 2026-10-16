@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../services/api.js';
+import ConfirmModal from './ConfirmModal.jsx';
 import {
   Activity,
   Plus,
@@ -34,6 +35,10 @@ export default function HealthCheckMonitor({ activeApplicationId }) {
   const [isPgCronRegistryOpen, setIsPgCronRegistryOpen] = useState(false);
   const [expandedSqlId, setExpandedSqlId] = useState(null);
   const [syncingCrons, setSyncingCrons] = useState(false);
+
+  // Delete confirmation modal state
+  const [checkToDelete, setCheckToDelete] = useState(null);
+  const [deletingCheck, setDeletingCheck] = useState(false);
 
   // History modal state
   const [historyCheck, setHistoryCheck] = useState(null);
@@ -149,14 +154,18 @@ export default function HealthCheckMonitor({ activeApplicationId }) {
     }
   };
 
-  const handleDelete = async (id, checkName) => {
-    if (!window.confirm(`Delete health check ${checkName} and unschedule its Supabase pg_cron job?`)) return;
+  const handleConfirmDelete = async () => {
+    if (!checkToDelete) return;
+    setDeletingCheck(true);
     try {
-      await api.healthChecks.delete(id);
-      setChecks(prev => prev.filter(c => c.id !== id));
-      setPgCrons(prev => prev.filter(j => j.health_check_id !== id));
+      await api.healthChecks.delete(checkToDelete.id);
+      setChecks(prev => prev.filter(c => c.id !== checkToDelete.id));
+      setPgCrons(prev => prev.filter(j => j.health_check_id !== checkToDelete.id));
+      setCheckToDelete(null);
     } catch (err) {
       alert(`Delete failed: ${err.message}`);
+    } finally {
+      setDeletingCheck(false);
     }
   };
 
@@ -444,7 +453,7 @@ export default function HealthCheckMonitor({ activeApplicationId }) {
                   </button>
 
                   <button
-                    onClick={() => handleDelete(check.id, check.name)}
+                    onClick={() => setCheckToDelete({ id: check.id, name: check.name })}
                     className="btn-neo-danger"
                     style={{ padding: '8px 10px' }}
                     title="Delete health check and pg_cron schedule"
@@ -959,6 +968,18 @@ export default function HealthCheckMonitor({ activeApplicationId }) {
           </div>
         </div>
       )}
+
+      {/* Delete Confirmation Modal */}
+      <ConfirmModal
+        isOpen={Boolean(checkToDelete)}
+        title="Delete Health Check"
+        message={`Are you sure you want to delete health check "${checkToDelete?.name}"?`}
+        warningNote="This will permanently delete this probe and unschedule its automated Supabase pg_cron job."
+        confirmText="Yes, Delete Probe"
+        loading={deletingCheck}
+        onConfirm={handleConfirmDelete}
+        onClose={() => setCheckToDelete(null)}
+      />
     </div>
   );
 }

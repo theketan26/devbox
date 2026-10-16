@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../services/api.js';
+import ConfirmModal from './ConfirmModal.jsx';
 import { ExternalLink, Plus, Archive, RotateCcw, Trash2, Tag, Globe, RefreshCw, X } from 'lucide-react';
 
 export default function LinksHub({ activeApplicationId, activeProjectId, hideHeader = false, customTitle = null }) {
@@ -7,6 +8,10 @@ export default function LinksHub({ activeApplicationId, activeProjectId, hideHea
   const [loading, setLoading] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
   const [isAddOpen, setIsAddOpen] = useState(false);
+
+  // Delete confirmation modal state
+  const [linkToDelete, setLinkToDelete] = useState(null);
+  const [deletingLink, setDeletingLink] = useState(false);
 
   // Form
   const [title, setTitle] = useState('');
@@ -46,13 +51,17 @@ export default function LinksHub({ activeApplicationId, activeProjectId, hideHea
     }
   };
 
-  const handleDelete = async (id, linkTitle) => {
-    if (!window.confirm(`Delete link ${linkTitle}?`)) return;
+  const handleConfirmDelete = async () => {
+    if (!linkToDelete) return;
+    setDeletingLink(true);
     try {
-      await api.links.delete(id);
-      setLinks(prev => prev.filter(l => l.id !== id));
+      await api.links.delete(linkToDelete.id);
+      setLinks(prev => prev.filter(l => l.id !== linkToDelete.id));
+      setLinkToDelete(null);
     } catch (err) {
       alert(`Delete failed: ${err.message}`);
+    } finally {
+      setDeletingLink(false);
     }
   };
 
@@ -144,7 +153,7 @@ export default function LinksHub({ activeApplicationId, activeProjectId, hideHea
                     {link.is_archived ? <RotateCcw size={13} /> : <Archive size={13} />}
                   </button>
                   <button
-                    onClick={() => handleDelete(link.id, link.title)}
+                    onClick={() => setLinkToDelete({ id: link.id, title: link.title })}
                     className="btn-neo-danger"
                     style={{ padding: '4px 8px' }}
                     title="Delete link"
@@ -281,6 +290,18 @@ export default function LinksHub({ activeApplicationId, activeProjectId, hideHea
           </div>
         </div>
       )}
+
+      {/* Delete Confirmation Modal */}
+      <ConfirmModal
+        isOpen={Boolean(linkToDelete)}
+        title="Delete Resource Link"
+        message={`Are you sure you want to delete the link "${linkToDelete?.title}"?`}
+        warningNote="This resource link reference will be permanently removed."
+        confirmText="Yes, Delete Link"
+        loading={deletingLink}
+        onConfirm={handleConfirmDelete}
+        onClose={() => setLinkToDelete(null)}
+      />
     </div>
   );
 }

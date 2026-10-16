@@ -85,7 +85,7 @@ export default function App() {
       {/* Main Content Area */}
       <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', height: '100vh', overflowY: 'auto' }}>
         {/* Body Content Container */}
-        <main style={{ flex: 1, maxWidth: '1440px', width: '100%', margin: '0 auto', padding: '24px 28px 60px', zIndex: 10 }}>
+        <main style={{ flex: 1, maxWidth: '1440px', width: '100%', margin: '0 auto', padding: '24px 28px 60px' }}>
           {activeTab === 'dashboard' && (
             <DashboardOverview
               setActiveTab={setActiveTab}

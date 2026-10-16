@@ -8,6 +8,7 @@ import {
   deleteApplicationFromState
 } from '../store/projectsSlice.js';
 import ApplicationDetailPage from './ApplicationDetailPage.jsx';
+import ConfirmModal from './ConfirmModal.jsx';
 import {
   Cpu,
   Plus,
@@ -56,6 +57,8 @@ export default function ApplicationsManager({
   // Delete confirmation modal state
   const [appToDelete, setAppToDelete] = useState(null);
   const [deletingApp, setDeletingApp] = useState(false);
+  const [depToDelete, setDepToDelete] = useState(null);
+  const [deletingDep, setDeletingDep] = useState(false);
 
   const fetchApplications = async (isPoll = false) => {
     if (!isPoll) setLoading(true);
@@ -122,13 +125,17 @@ export default function ApplicationsManager({
     }
   };
 
-  const handleDeleteDeployment = async (appId, depId) => {
-    if (!window.confirm('Remove this deployment URL?')) return;
+  const handleConfirmDeleteDep = async () => {
+    if (!depToDelete) return;
+    setDeletingDep(true);
     try {
-      await api.applications.deleteDeployment(appId, depId);
+      await api.applications.deleteDeployment(depToDelete.appId, depToDelete.depId);
       fetchApplications();
+      setDepToDelete(null);
     } catch (err) {
       alert(`Failed to delete deployment URL: ${err.message}`);
+    } finally {
+      setDeletingDep(false);
     }
   };
 
@@ -556,6 +563,18 @@ export default function ApplicationsManager({
           </div>
         </div>
       )}
+
+      {/* Delete Deployment Confirmation Modal */}
+      <ConfirmModal
+        isOpen={Boolean(depToDelete)}
+        title="Remove Deployment Endpoint"
+        message="Are you sure you want to remove this deployment URL?"
+        warningNote="This endpoint mapping will be removed from this application."
+        confirmText="Remove Endpoint"
+        loading={deletingDep}
+        onConfirm={handleConfirmDeleteDep}
+        onClose={() => setDepToDelete(null)}
+      />
     </div>
   );
 }

@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useDispatch } from 'react-redux';
 import { api } from '../services/api.js';
 import { updateApplicationInState, deleteApplicationFromState } from '../store/projectsSlice.js';
+import ConfirmModal from './ConfirmModal.jsx';
 import ConfigsManager from './ConfigsManager.jsx';
 import HealthCheckMonitor from './HealthCheckMonitor.jsx';
 import LinksHub from './LinksHub.jsx';
@@ -52,6 +53,12 @@ export default function ApplicationDetailPage({
   const [editRepoUrl, setEditRepoUrl] = useState('');
   const [savingEdit, setSavingEdit] = useState(false);
 
+  // Delete confirmation modal states
+  const [isDeleteAppOpen, setIsDeleteAppOpen] = useState(false);
+  const [deletingApp, setDeletingApp] = useState(false);
+  const [depToDelete, setDepToDelete] = useState(null);
+  const [deletingDep, setDeletingDep] = useState(false);
+
   const fetchAppDetails = async (isPoll = false) => {
     if (!applicationId) return;
     if (!isPoll) setLoading(true);
@@ -95,14 +102,18 @@ export default function ApplicationDetailPage({
     }
   };
 
-  const handleDeleteDeployment = async (depId) => {
-    if (!window.confirm('Delete this deployment endpoint?')) return;
+  const handleConfirmDeleteDep = async () => {
+    if (!depToDelete) return;
+    setDeletingDep(true);
     try {
-      await api.applications.deleteDeployment(app.id, depId);
+      await api.applications.deleteDeployment(app.id, depToDelete.id);
       fetchAppDetails();
       if (onApplicationUpdated) onApplicationUpdated();
+      setDepToDelete(null);
     } catch (err) {
       alert(`Failed to delete deployment: ${err.message}`);
+    } finally {
+      setDeletingDep(false);
     }
   };
 
@@ -128,17 +139,18 @@ export default function ApplicationDetailPage({
     }
   };
 
-  const handleDeleteApp = async () => {
-    if (!window.confirm(`Are you sure you want to delete "${app?.name}"? All secrets, health checks, links and files will be deleted.`)) {
-      return;
-    }
+  const handleConfirmDeleteApp = async () => {
+    setDeletingApp(true);
     try {
       await api.applications.delete(app.id);
       dispatch(deleteApplicationFromState(app.id));
+      setIsDeleteAppOpen(false);
       if (onApplicationDeleted) onApplicationDeleted(app.id);
       if (onBack) onBack();
     } catch (err) {
       alert(`Delete failed: ${err.message}`);
+    } finally {
+      setDeletingApp(false);
     }
   };
 
@@ -196,7 +208,7 @@ export default function ApplicationDetailPage({
           </button>
 
           <button
-            onClick={handleDeleteApp}
+            onClick={() => setIsDeleteAppOpen(true)}
             className="btn-neo-danger"
             style={{ padding: '7px 14px', fontSize: '0.82rem' }}
           >
@@ -318,7 +330,7 @@ export default function ApplicationDetailPage({
                     <ExternalLink size={12} />
                   </a>
                   <button
-                    onClick={() => handleDeleteDeployment(dep.id)}
+                    onClick={() => setDepToDelete(dep)}
                     style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
                     title="Delete deployment"
                   >
@@ -561,6 +573,30 @@ export default function ApplicationDetailPage({
           </div>
         </div>
       )}
+
+      {/* Delete Application Confirmation Modal */}
+      <ConfirmModal
+        isOpen={isDeleteAppOpen}
+        title="Delete Application"
+        message={`Are you sure you want to delete application "${app?.name}"?`}
+        warningNote="All secrets, health check probes, resource links, and uploaded files belonging to this application will be permanently purged."
+        confirmText="Yes, Delete Application"
+        loading={deletingApp}
+        onConfirm={handleConfirmDeleteApp}
+        onClose={() => setIsDeleteAppOpen(false)}
+      />
+
+      {/* Delete Deployment Confirmation Modal */}
+      <ConfirmModal
+        isOpen={Boolean(depToDelete)}
+        title="Remove Deployment Endpoint"
+        message={`Are you sure you want to remove the deployment URL for ${depToDelete?.environment}?`}
+        warningNote="This endpoint mapping will be removed from this application."
+        confirmText="Remove Endpoint"
+        loading={deletingDep}
+        onConfirm={handleConfirmDeleteDep}
+        onClose={() => setDepToDelete(null)}
+      />
     </div>
   );
 }

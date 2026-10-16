@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { api } from '../services/api.js';
+import ConfirmModal from './ConfirmModal.jsx';
 import {
   FileText,
   Plus,
@@ -21,6 +22,10 @@ export default function ProjectFilesManager({ activeProjectId }) {
   const [isUploadOpen, setIsUploadOpen] = useState(false);
   const [signedUrlData, setSignedUrlData] = useState(null);
   const [copied, setCopied] = useState(false);
+
+  // Delete confirmation modal state
+  const [fileToDelete, setFileToDelete] = useState(null);
+  const [deletingFile, setDeletingFile] = useState(false);
 
   // Upload Form State
   const [selectedFile, setSelectedFile] = useState(null);
@@ -58,13 +63,17 @@ export default function ProjectFilesManager({ activeProjectId }) {
     }
   };
 
-  const handleDelete = async (fileId, fileTitle) => {
-    if (!window.confirm(`Delete file "${fileTitle}" from storage?`)) return;
+  const handleConfirmDelete = async () => {
+    if (!fileToDelete) return;
+    setDeletingFile(true);
     try {
-      await api.projects.deleteFile(activeProjectId, fileId);
-      setFiles(prev => prev.filter(f => f.id !== fileId));
+      await api.projects.deleteFile(activeProjectId, fileToDelete.id);
+      setFiles(prev => prev.filter(f => f.id !== fileToDelete.id));
+      setFileToDelete(null);
     } catch (err) {
       alert(`Delete failed: ${err.message}`);
+    } finally {
+      setDeletingFile(false);
     }
   };
 
@@ -195,7 +204,7 @@ export default function ProjectFilesManager({ activeProjectId }) {
                           <span>Download</span>
                         </button>
                         <button
-                          onClick={() => handleDelete(f.id, f.title || f.file_name)}
+                          onClick={() => setFileToDelete({ id: f.id, title: f.title || f.file_name })}
                           className="btn-neo-danger"
                           style={{ padding: '6px 10px', fontSize: '0.78rem' }}
                           title="Delete file from storage"
@@ -369,6 +378,18 @@ export default function ProjectFilesManager({ activeProjectId }) {
           </div>
         </div>
       )}
+
+      {/* Delete Confirmation Modal */}
+      <ConfirmModal
+        isOpen={Boolean(fileToDelete)}
+        title="Delete Project File"
+        message={`Are you sure you want to permanently delete "${fileToDelete?.title}" from storage?`}
+        warningNote="The file object in storage and its metadata will be permanently removed."
+        confirmText="Yes, Delete File"
+        loading={deletingFile}
+        onConfirm={handleConfirmDelete}
+        onClose={() => setFileToDelete(null)}
+      />
     </div>
   );
 }

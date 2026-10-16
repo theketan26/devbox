@@ -2,6 +2,7 @@ import express from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import { requireAuth } from '../middleware/auth.js';
 import { getSupabase } from '../services/supabase.js';
+import { isValidUuid, cleanUuid } from '../utils/validation.js';
 
 const router = express.Router();
 
@@ -22,14 +23,14 @@ router.get('/', async (req, res) => {
       query = query.eq('is_archived', false);
     }
 
-    if (applicationId) {
+    if (isValidUuid(applicationId)) {
       query = query.eq('application_id', applicationId);
       const { data, error } = await query;
       if (error) throw error;
       return res.json(data || []);
     }
 
-    if (projectId) {
+    if (isValidUuid(projectId)) {
       // Find all apps belonging to this project
       const { data: projectApps } = await client
         .from('applications')
@@ -67,15 +68,31 @@ router.post('/', requireAuth, async (req, res) => {
 
   const { application_id, project_id, title, url, category = 'General', notes } = req.body;
 
-  if ((!application_id && !project_id) || !title || !url) {
-    return res.status(400).json({ error: 'application_id or project_id, title, and url are required' });
+  let cleanAppId = cleanUuid(application_id);
+  const cleanProjId = cleanUuid(project_id);
+
+  if ((!cleanAppId && !cleanProjId) || !title || !url) {
+    return res.status(400).json({ error: 'Valid application_id or project_id, title, and url are required' });
+  }
+
+  // If application_id was not provided, resolve it from the project's applications
+  if (!cleanAppId && cleanProjId) {
+    const { data: projectApps } = await client
+      .from('applications')
+      .select('id')
+      .eq('project_id', cleanProjId)
+      .order('created_at', { ascending: true })
+      .limit(1);
+
+    if (projectApps && projectApps.length > 0) {
+      cleanAppId = projectApps[0].id;
+    }
   }
 
   const now = new Date().toISOString();
-  const newLink = {
-    id: uuidv4(),
-    application_id: application_id || null,
-    project_id: project_id || null,
+  const linkId = uuidv4();
+  const payload = {
+    id: linkId,
     title: title.trim(),
     url: url.trim(),
     category: category.trim(),
@@ -85,16 +102,47 @@ router.post('/', requireAuth, async (req, res) => {
     updated_at: now
   };
 
+  if (cleanAppId) {
+    payload.application_id = cleanAppId;
+  }
+
+  // Try saving with project_id first if provided
+  if (cleanProjId) {
+    payload.project_id = cleanProjId;
+  }
+
   try {
-    const { data, error } = await client
+    let { data, error } = await client
       .from('application_links')
-      .insert(newLink)
+      .insert(payload)
       .select()
       .single();
 
+    // If project_id column does not exist in schema cache, retry without project_id
+    if (error && (error.message?.includes('project_id') || error.code === 'PGRST204')) {
+      delete payload.project_id;
+      if (!payload.application_id && cleanProjId) {
+        const { data: apps } = await client
+          .from('applications')
+          .select('id')
+          .eq('project_id', cleanProjId)
+          .limit(1);
+        if (apps && apps.length > 0) {
+          payload.application_id = apps[0].id;
+        }
+      }
+      const retryResult = await client
+        .from('application_links')
+        .insert(payload)
+        .select()
+        .single();
+      data = retryResult.data;
+      error = retryResult.error;
+    }
+
     if (error) throw error;
 
-    return res.status(201).json(data || newLink);
+    return res.status(201).json(data || payload);
   } catch (err) {
     console.error('POST /api/links error:', err);
     return res.status(500).json({ error: err.message });

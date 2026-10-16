@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { api } from '../services/api.js';
 import ExportConfigModal from './ExportConfigModal.jsx';
 import ImportEnvModal from './ImportEnvModal.jsx';
+import ConfirmModal from './ConfirmModal.jsx';
 import {
   Key,
   Plus,
@@ -31,6 +32,10 @@ export default function ConfigsManager({
   const [isExportOpen, setIsExportOpen] = useState(false);
   const [isImportOpen, setIsImportOpen] = useState(false);
   const [isAddOpen, setIsAddOpen] = useState(false);
+
+  // Delete confirmation modal state
+  const [configToDelete, setConfigToDelete] = useState(null);
+  const [deletingConfig, setDeletingConfig] = useState(false);
 
   // New config form state
   const [newKey, setNewKey] = useState('');
@@ -76,13 +81,17 @@ export default function ConfigsManager({
     }));
   };
 
-  const handleDelete = async (id, key) => {
-    if (!window.confirm(`Delete variable ${key}?`)) return;
+  const handleConfirmDelete = async () => {
+    if (!configToDelete) return;
+    setDeletingConfig(true);
     try {
-      await api.configs.delete(id);
-      setConfigs(prev => prev.filter(c => c.id !== id));
+      await api.configs.delete(configToDelete.id);
+      setConfigs(prev => prev.filter(c => c.id !== configToDelete.id));
+      setConfigToDelete(null);
     } catch (err) {
       alert(`Delete failed: ${err.message}`);
+    } finally {
+      setDeletingConfig(false);
     }
   };
 
@@ -264,7 +273,7 @@ export default function ConfigsManager({
                       {/* Actions */}
                       <td style={{ textAlign: 'right' }}>
                         <button
-                          onClick={() => handleDelete(cfg.id, cfg.key)}
+                          onClick={() => setConfigToDelete({ id: cfg.id, key: cfg.key })}
                           className="btn-neo-danger"
                           style={{ padding: '5px 10px', fontSize: '0.76rem' }}
                           title="Delete secret"
@@ -476,6 +485,18 @@ export default function ConfigsManager({
           onImportSuccess={fetchConfigs}
         />
       )}
+
+      {/* Delete Confirmation Modal */}
+      <ConfirmModal
+        isOpen={Boolean(configToDelete)}
+        title="Delete Secret"
+        message={`Are you sure you want to permanently delete "${configToDelete?.key}" from ${activeTab.toUpperCase()}?`}
+        warningNote="All version history and encrypted values for this key will be permanently purged."
+        confirmText="Yes, Delete Secret"
+        loading={deletingConfig}
+        onConfirm={handleConfirmDelete}
+        onClose={() => setConfigToDelete(null)}
+      />
     </div>
   );
 }
