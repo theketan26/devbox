@@ -34,15 +34,21 @@ export async function getWhatsAppStatus() {
  * @returns {Promise<{ success: boolean, messageId?: string, timestamp?: string, error?: string }>}
  */
 export async function sendWhatsAppAlert(message, recipient) {
-  const targetRecipient = recipient || config.whatsappRecipient;
+  const targetRecipient = recipient || config.whatsappRecipient || '120363431013330373@g.us';
   console.log(`[WhatsApp Dispatcher] Sending alert to ${targetRecipient}:`, message);
 
   try {
     const res = await axios.post(
-      `${config.whatsappServerUrl}/api/send-message`,
+      `${config.whatsappServerUrl}/api/sendText`,
       {
-        recipient: targetRecipient,
-        message
+        chatId: targetRecipient,
+        id: null,
+        mentions: null,
+        reply_to: null,
+        text: message,
+        linkPreview: true,
+        linkPreviewHighQuality: false,
+        session: 'testing'
       },
       {
         headers: {
