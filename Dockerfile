@@ -3,7 +3,7 @@
 # ==============================================================================
 
 # STAGE 1: Build Frontend (Vite + React)
-FROM node:20-alpine AS client-builder
+FROM node:22-alpine AS client-builder
 WORKDIR /app/client
 
 COPY client/package*.json ./
@@ -15,14 +15,14 @@ ENV VITE_API_URL=$VITE_API_URL
 RUN npm run build
 
 # STAGE 2: Install Server Production Dependencies
-FROM node:20-alpine AS server-builder
+FROM node:22-alpine AS server-builder
 WORKDIR /app/server
 
 COPY server/package*.json ./
 RUN npm ci --omit=dev
 
 # STAGE 3: Final Production Runtime Image
-FROM node:20-alpine AS runner
+FROM node:22-alpine AS runner
 WORKDIR /app
 
 ENV NODE_ENV=production

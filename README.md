@@ -28,7 +28,21 @@ npm run dev
 npm run test
 ```
 
-### 3. Local CLI Usage
+### 3. Run with Docker (Recommended for Production / Containerized Setup)
+
+```bash
+# Build and run in detached mode
+docker compose up -d --build
+
+# View container logs
+docker compose logs -f
+
+# Stop container
+docker compose down
+```
+Access the application at **`http://localhost:10000`**.
+
+### 4. Local CLI Usage
 ```bash
 # Pull production secrets into .env
 node cli/bin/devbox.js pull --env production --out .env
