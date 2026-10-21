@@ -23,7 +23,8 @@ import {
   Cpu,
   History,
   ChevronLeft,
-  ChevronRight
+  ChevronRight,
+  Edit2
 } from 'lucide-react';
 
 export default function HealthCheckMonitor({ activeApplicationId }) {
@@ -57,6 +58,18 @@ export default function HealthCheckMonitor({ activeApplicationId }) {
   const [expectedJsonStr, setExpectedJsonStr] = useState('');
   const [isMaintenance, setIsMaintenance] = useState(false);
   const [saving, setSaving] = useState(false);
+
+  // Edit Form state
+  const [editingCheck, setEditingCheck] = useState(null);
+  const [editName, setEditName] = useState('');
+  const [editEndpointUrl, setEditEndpointUrl] = useState('');
+  const [editMethod, setEditMethod] = useState('GET');
+  const [editIntervalMinutes, setEditIntervalMinutes] = useState(5);
+  const [editTimeoutMs, setEditTimeoutMs] = useState(5000);
+  const [editExpectedStatus, setEditExpectedStatus] = useState(200);
+  const [editExpectedJsonStr, setEditExpectedJsonStr] = useState('');
+  const [editIsMaintenance, setEditIsMaintenance] = useState(false);
+  const [savingEdit, setSavingEdit] = useState(false);
 
   const fetchChecks = async () => {
     setLoading(true);
@@ -209,8 +222,75 @@ export default function HealthCheckMonitor({ activeApplicationId }) {
     }
   };
 
+  const handleOpenEdit = (check) => {
+    if (!check) return;
+    setEditingCheck(check);
+    setEditName(check.name || '');
+    setEditEndpointUrl(check.endpoint_url || '');
+    setEditMethod(check.method || 'GET');
+    setEditIntervalMinutes(check.interval_minutes || 5);
+    setEditTimeoutMs(check.timeout_ms || 5000);
+    setEditExpectedStatus(check.expected_status || 200);
+    setEditExpectedJsonStr(
+      check.expected_json_payload
+        ? (typeof check.expected_json_payload === 'string'
+            ? check.expected_json_payload
+            : JSON.stringify(check.expected_json_payload, null, 2))
+        : ''
+    );
+    setEditIsMaintenance(Boolean(check.is_maintenance_mode));
+  };
+
+  const handleCloseEdit = () => {
+    setEditingCheck(null);
+    setSavingEdit(false);
+  };
+
+  const handleSaveEdit = async (e) => {
+    e.preventDefault();
+    if (!editingCheck) return;
+    if (!editName.trim() || !editEndpointUrl.trim()) {
+      alert('Please provide a name and endpoint URL.');
+      return;
+    }
+
+    let parsedJson = null;
+    if (editExpectedJsonStr.trim()) {
+      try {
+        parsedJson = JSON.parse(editExpectedJsonStr);
+      } catch {
+        alert('Invalid JSON in Expected JSON Payload');
+        return;
+      }
+    }
+
+    setSavingEdit(true);
+    try {
+      const payload = {
+        name: editName.trim(),
+        endpoint_url: editEndpointUrl.trim(),
+        method: editMethod,
+        interval_minutes: Number(editIntervalMinutes),
+        timeout_ms: Number(editTimeoutMs),
+        expected_status: Number(editExpectedStatus),
+        expected_json_payload: parsedJson,
+        is_maintenance_mode: editIsMaintenance
+      };
+
+      const updated = await api.healthChecks.update(editingCheck.id, payload);
+      setChecks(prev => prev.map(c => (c.id === editingCheck.id ? { ...c, ...updated } : c)));
+      handleCloseEdit();
+      fetchChecks();
+    } catch (err) {
+      alert(`Failed to update health check: ${err.message}`);
+    } finally {
+      setSavingEdit(false);
+    }
+  };
+
   // Cron expression helper for modal preview
   const previewCronExpr = Number(intervalMinutes) === 1 ? '* * * * *' : `*/${Number(intervalMinutes) || 5} * * * *`;
+  const editPreviewCronExpr = Number(editIntervalMinutes) === 1 ? '* * * * *' : `*/${Number(editIntervalMinutes) || 5} * * * *`;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
@@ -223,6 +303,7 @@ export default function HealthCheckMonitor({ activeApplicationId }) {
         </div>
 
         <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+          {/*
           <button
             onClick={() => setIsPgCronRegistryOpen(prev => !prev)}
             className={isPgCronRegistryOpen ? 'btn-neo-cyan' : 'btn-neo-outline'}
@@ -242,6 +323,7 @@ export default function HealthCheckMonitor({ activeApplicationId }) {
             <RefreshCw size={14} className={syncingCrons ? 'animate-spin' : ''} strokeWidth={3} />
             <span>{syncingCrons ? 'Syncing...' : 'Sync pg_cron'}</span>
           </button>
+          */}
 
           <button
             onClick={fetchChecks}
@@ -337,15 +419,28 @@ export default function HealthCheckMonitor({ activeApplicationId }) {
                           {job.command ? job.command.slice(0, 45) + '...' : '—'}
                         </td>
                         <td style={{ padding: '10px 12px', textAlign: 'right', whiteSpace: 'nowrap' }}>
-                          <button
-                            onClick={() => handleOpenHistory(targetCheckId, targetCheckName)}
-                            className="btn-neo-outline"
-                            style={{ padding: '4px 10px', fontSize: '0.74rem', display: 'inline-flex', alignItems: 'center', gap: '5px' }}
-                            title="View health check call history and logs"
-                          >
-                            <History size={13} strokeWidth={2.5} />
-                            <span>History</span>
-                          </button>
+                          <div style={{ display: 'inline-flex', gap: '6px' }}>
+                            {matchedCheck && (
+                              <button
+                                onClick={() => handleOpenEdit(matchedCheck)}
+                                className="btn-neo-outline"
+                                style={{ padding: '4px 10px', fontSize: '0.74rem', display: 'inline-flex', alignItems: 'center', gap: '5px' }}
+                                title="Edit health check probe"
+                              >
+                                <Edit2 size={13} strokeWidth={2.5} />
+                                <span>Edit</span>
+                              </button>
+                            )}
+                            <button
+                              onClick={() => handleOpenHistory(targetCheckId, targetCheckName)}
+                              className="btn-neo-outline"
+                              style={{ padding: '4px 10px', fontSize: '0.74rem', display: 'inline-flex', alignItems: 'center', gap: '5px' }}
+                              title="View health check call history and logs"
+                            >
+                              <History size={13} strokeWidth={2.5} />
+                              <span>History</span>
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     );
@@ -450,6 +545,18 @@ export default function HealthCheckMonitor({ activeApplicationId }) {
                   >
                     <History size={14} strokeWidth={2.5} />
                     <span>HISTORY</span>
+                  </button>
+
+                  {/* Edit Button */}
+                  <button
+                    id={`btn-edit-${check.id}`}
+                    onClick={() => handleOpenEdit(check)}
+                    className="btn-neo-outline"
+                    style={{ padding: '8px 14px', fontSize: '0.8rem', display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+                    title="Edit health check probe configuration"
+                  >
+                    <Edit2 size={14} strokeWidth={2.5} />
+                    <span>EDIT</span>
                   </button>
 
                   <button
@@ -726,6 +833,198 @@ export default function HealthCheckMonitor({ activeApplicationId }) {
                   className="btn-neo-primary"
                 >
                   {saving ? 'Registering...' : 'Register Probe & pg_cron'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Edit Health Check Modal */}
+      {editingCheck && (
+        <div className="neo-modal-overlay" onClick={handleCloseEdit}>
+          <div className="neo-modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '640px' }}>
+            <div
+              className="neo-modal-header neo-modal-header-cyan"
+              style={{
+                padding: '20px 24px',
+                borderBottom: 'var(--neo-border-4)',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                background: 'var(--neo-cyan)',
+                color: '#000000'
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <Edit2 size={20} color="#000" strokeWidth={3} />
+                <h3 style={{ fontSize: '1.25rem', color: '#000000', margin: 0, fontWeight: 900 }}>
+                  EDIT HEALTH PROBE & pg_cron
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={handleCloseEdit}
+                className="btn-neo-outline"
+                style={{ padding: '4px 8px', background: '#000000', color: '#FFFFFF', border: '2px solid #000000' }}
+              >
+                ✕
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveEdit} style={{ padding: '24px' }}>
+              <div style={{ marginBottom: '16px' }}>
+                <label style={{ display: 'block', fontSize: '0.84rem', fontWeight: 900, marginBottom: '6px' }}>
+                  CHECK NAME
+                </label>
+                <input
+                  id="input-edit-hc-name"
+                  type="text"
+                  required
+                  placeholder="e.g. Edge CDN Ready Probe"
+                  value={editName}
+                  onChange={(e) => setEditName(e.target.value)}
+                  className="neo-input"
+                  autoFocus
+                />
+              </div>
+
+              <div style={{ marginBottom: '16px' }}>
+                <label style={{ display: 'block', fontSize: '0.84rem', fontWeight: 900, marginBottom: '6px' }}>
+                  TARGET URL
+                </label>
+                <input
+                  id="input-edit-hc-url"
+                  type="url"
+                  required
+                  placeholder="https://api.yourdomain.com/health"
+                  value={editEndpointUrl}
+                  onChange={(e) => setEditEndpointUrl(e.target.value)}
+                  className="neo-input font-mono"
+                />
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '14px', marginBottom: '16px' }}>
+                <div>
+                  <label style={{ display: 'block', fontSize: '0.78rem', fontWeight: 900, marginBottom: '4px' }}>
+                    HTTP METHOD
+                  </label>
+                  <select
+                    id="select-edit-hc-method"
+                    value={editMethod}
+                    onChange={(e) => setEditMethod(e.target.value)}
+                    className="neo-input font-mono"
+                  >
+                    <option value="GET">GET</option>
+                    <option value="POST">POST</option>
+                    <option value="HEAD">HEAD</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label style={{ display: 'block', fontSize: '0.78rem', fontWeight: 900, marginBottom: '4px' }}>
+                    EXPECTED CODE
+                  </label>
+                  <input
+                    id="input-edit-hc-status"
+                    type="number"
+                    value={editExpectedStatus}
+                    onChange={(e) => setEditExpectedStatus(e.target.value)}
+                    className="neo-input font-mono"
+                  />
+                </div>
+
+                <div>
+                  <label style={{ display: 'block', fontSize: '0.78rem', fontWeight: 900, marginBottom: '4px' }}>
+                    INTERVAL (MINS)
+                  </label>
+                  <input
+                    id="input-edit-hc-interval"
+                    type="number"
+                    min="1"
+                    max="60"
+                    value={editIntervalMinutes}
+                    onChange={(e) => setEditIntervalMinutes(e.target.value)}
+                    className="neo-input font-mono"
+                  />
+                </div>
+              </div>
+
+              {/* Supabase pg_cron Schedule Callout */}
+              <div style={{
+                background: 'var(--neo-surface-3)',
+                border: 'var(--neo-border-2)',
+                padding: '12px 14px',
+                marginBottom: '16px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: '12px'
+              }}>
+                <div>
+                  <div style={{ fontSize: '0.74rem', fontWeight: 900, textTransform: 'uppercase', color: 'var(--neo-cyan)' }}>
+                    SUPABASE pg_cron SCHEDULE EXPRESSION
+                  </div>
+                  <div style={{ fontSize: '0.78rem', opacity: 0.8, marginTop: '2px' }}>
+                    PostgreSQL will automatically trigger this probe via <code className="font-mono">pg_net</code>
+                  </div>
+                </div>
+                <div className="neo-badge neo-badge-yellow font-mono font-bold" style={{ fontSize: '0.92rem' }}>
+                  {editPreviewCronExpr}
+                </div>
+              </div>
+
+              <div style={{ marginBottom: '16px' }}>
+                <label style={{ display: 'block', fontSize: '0.78rem', fontWeight: 900, marginBottom: '6px' }}>
+                  TIMEOUT (MS)
+                </label>
+                <input
+                  id="input-edit-hc-timeout"
+                  type="number"
+                  value={editTimeoutMs}
+                  onChange={(e) => setEditTimeoutMs(e.target.value)}
+                  className="neo-input font-mono"
+                />
+              </div>
+
+              <div style={{ marginBottom: '16px' }}>
+                <label style={{ display: 'block', fontSize: '0.78rem', fontWeight: 900, marginBottom: '6px' }}>
+                  EXPECTED JSON BODY PATTERN (OPTIONAL)
+                </label>
+                <input
+                  id="input-edit-hc-json"
+                  type="text"
+                  placeholder='{"status": "ok"}'
+                  value={editExpectedJsonStr}
+                  onChange={(e) => setEditExpectedJsonStr(e.target.value)}
+                  className="neo-input font-mono"
+                />
+              </div>
+
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '24px' }}>
+                <input
+                  id="checkbox-edit-maintenance"
+                  type="checkbox"
+                  checked={editIsMaintenance}
+                  onChange={(e) => setEditIsMaintenance(e.target.checked)}
+                  style={{ width: '20px', height: '20px', accentColor: 'var(--neo-cyan)' }}
+                />
+                <label htmlFor="checkbox-edit-maintenance" style={{ fontSize: '0.88rem', fontWeight: 900, cursor: 'pointer' }}>
+                  MAINTENANCE MODE (PAUSES pg_cron & SILENCES ALERTS)
+                </label>
+              </div>
+
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px' }}>
+                <button type="button" onClick={handleCloseEdit} className="btn-neo-outline">
+                  Cancel
+                </button>
+                <button
+                  id="btn-update-hc"
+                  type="submit"
+                  disabled={savingEdit}
+                  className="btn-neo-cyan"
+                >
+                  {savingEdit ? 'Saving Changes...' : 'Save Probe Changes'}
                 </button>
               </div>
             </form>

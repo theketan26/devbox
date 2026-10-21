@@ -219,6 +219,20 @@ async function runTests() {
     });
     assert.strictEqual(pingRes.status, 200);
     console.log(`✓ Health check ping executed (status: ${pingRes.data.currentStatus})`);
+
+    // Test updating probe
+    const updateRes = await request('PUT', `/api/health-checks/${hcList.data[0].id}`, {
+      name: 'Updated Health Probe',
+      interval_minutes: 15,
+      timeout_ms: 7000
+    }, {
+      Authorization: `Bearer ${authToken}`
+    });
+    assert.strictEqual(updateRes.status, 200);
+    assert.strictEqual(updateRes.data.name, 'Updated Health Probe');
+    assert.strictEqual(updateRes.data.interval_minutes, 15);
+    assert.strictEqual(updateRes.data.timeout_ms, 7000);
+    console.log('✓ Health check probe update verified');
   }
 
   // 15. Application Files Upload & Download URL

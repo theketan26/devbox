@@ -247,18 +247,30 @@ router.put('/:id', requireAuth, async (req, res) => {
   if (expected_json_payload !== undefined) updates.expected_json_payload = expected_json_payload;
   if (is_active !== undefined) updates.is_active = Boolean(is_active);
 
-  if (is_maintenance_mode !== undefined) {
-    updates.is_maintenance_mode = Boolean(is_maintenance_mode);
-    if (updates.is_maintenance_mode) {
-      updates.current_status = 'maintenance';
-      updates.consecutive_failures = 0;
-      updates.down_since = null;
-    } else {
-      updates.current_status = 'unknown';
-    }
-  }
-
   try {
+    const { data: existing, error: eErr } = await client
+      .from('health_checks')
+      .select('*')
+      .eq('id', req.params.id)
+      .single();
+
+    if (eErr || !existing) {
+      return res.status(404).json({ error: 'Health check not found' });
+    }
+
+    if (is_maintenance_mode !== undefined) {
+      updates.is_maintenance_mode = Boolean(is_maintenance_mode);
+      if (updates.is_maintenance_mode !== existing.is_maintenance_mode) {
+        if (updates.is_maintenance_mode) {
+          updates.current_status = 'maintenance';
+          updates.consecutive_failures = 0;
+          updates.down_since = null;
+        } else {
+          updates.current_status = 'unknown';
+        }
+      }
+    }
+
     const { data: updated, error: uErr } = await client
       .from('health_checks')
       .update(updates)
