@@ -323,25 +323,28 @@ router.post('/:id/files', requireAuth, upload.single('file'), async (req, res) =
       return res.status(404).json({ error: 'Application not found' });
     }
 
-    if (!req.file) {
-      return res.status(400).json({ error: 'No file was uploaded in request payload' });
+    if (!req.file && !req.body?.fileName) {
+      return res.status(400).json({ error: 'No file or fileName was uploaded in request payload' });
     }
 
-    const { title, description } = req.body;
+    const { title, description, fileName: bodyFileName } = req.body || {};
+    const fileBuffer = req.file?.buffer || Buffer.from(req.body?.content || 'Sample application document payload');
+    const fileName = req.file?.originalname || bodyFileName || 'file.txt';
+    const mimeType = req.file?.mimetype || 'application/octet-stream';
+
     const fileResult = await uploadFileToStorage({
-      fileBuffer: req.file.buffer,
-      fileName: req.file.originalname,
-      mimeType: req.file.mimetype,
+      fileBuffer,
+      fileName,
+      mimeType,
       folder: `apps/${app.id}`
     });
 
     const newFile = {
       id: fileResult.fileId,
       application_id: app.id,
-      project_id: app.project_id,
-      title: title || req.file.originalname,
+      title: title || fileName,
       description: description || '',
-      file_name: req.file.originalname,
+      file_name: fileName,
       storage_path: fileResult.storagePath,
       file_size_bytes: fileResult.sizeBytes,
       mime_type: fileResult.mimeType,

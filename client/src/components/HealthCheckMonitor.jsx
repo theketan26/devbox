@@ -24,8 +24,20 @@ import {
   History,
   ChevronLeft,
   ChevronRight,
-  Edit2
+  Edit2,
+  Calendar,
+  Sparkles,
+  Check
 } from 'lucide-react';
+import {
+  CRON_PRESETS,
+  isValidCron,
+  normalizeCron,
+  describeCron,
+  intervalToCronExpression,
+  cronToIntervalMinutes,
+  getNextCronRun
+} from '../utils/cronHelper.js';
 
 export default function HealthCheckMonitor({ activeApplicationId }) {
   const [checks, setChecks] = useState([]);
@@ -36,6 +48,13 @@ export default function HealthCheckMonitor({ activeApplicationId }) {
   const [isPgCronRegistryOpen, setIsPgCronRegistryOpen] = useState(false);
   const [expandedSqlId, setExpandedSqlId] = useState(null);
   const [syncingCrons, setSyncingCrons] = useState(false);
+
+  // Direct Cron Update modal state
+  const [cronModalCheck, setCronModalCheck] = useState(null);
+  const [directCronPreset, setDirectCronPreset] = useState('*/5 * * * *');
+  const [directCronCustom, setDirectCronCustom] = useState('*/5 * * * *');
+  const [savingDirectCron, setSavingDirectCron] = useState(false);
+  const [directCronSuccessMsg, setDirectCronSuccessMsg] = useState('');
 
   // Delete confirmation modal state
   const [checkToDelete, setCheckToDelete] = useState(null);
@@ -52,7 +71,11 @@ export default function HealthCheckMonitor({ activeApplicationId }) {
   const [name, setName] = useState('');
   const [endpointUrl, setEndpointUrl] = useState('');
   const [method, setMethod] = useState('GET');
+  const [headersStr, setHeadersStr] = useState('');
+  const [requestBodyStr, setRequestBodyStr] = useState('');
   const [intervalMinutes, setIntervalMinutes] = useState(5);
+  const [addCronPreset, setAddCronPreset] = useState('*/5 * * * *');
+  const [addCronCustom, setAddCronCustom] = useState('*/5 * * * *');
   const [timeoutMs, setTimeoutMs] = useState(5000);
   const [expectedStatus, setExpectedStatus] = useState(200);
   const [expectedJsonStr, setExpectedJsonStr] = useState('');
@@ -64,7 +87,11 @@ export default function HealthCheckMonitor({ activeApplicationId }) {
   const [editName, setEditName] = useState('');
   const [editEndpointUrl, setEditEndpointUrl] = useState('');
   const [editMethod, setEditMethod] = useState('GET');
+  const [editHeadersStr, setEditHeadersStr] = useState('');
+  const [editRequestBodyStr, setEditRequestBodyStr] = useState('');
   const [editIntervalMinutes, setEditIntervalMinutes] = useState(5);
+  const [editCronPreset, setEditCronPreset] = useState('*/5 * * * *');
+  const [editCronCustom, setEditCronCustom] = useState('*/5 * * * *');
   const [editTimeoutMs, setEditTimeoutMs] = useState(5000);
   const [editExpectedStatus, setEditExpectedStatus] = useState(200);
   const [editExpectedJsonStr, setEditExpectedJsonStr] = useState('');
@@ -142,8 +169,22 @@ export default function HealthCheckMonitor({ activeApplicationId }) {
   const handlePing = async (id) => {
     setPingingId(id);
     try {
-      await api.healthChecks.ping(id);
-      fetchChecks(true);
+      const pingResult = await api.healthChecks.ping(id);
+      setChecks(prev =>
+        prev.map(c =>
+          c.id === id
+            ? {
+                ...c,
+                last_status_code: pingResult.statusCode,
+                last_response_time_ms: pingResult.responseTimeMs,
+                current_status: pingResult.currentStatus,
+                consecutive_failures: pingResult.consecutiveFailures,
+                last_checked_at: new Date().toISOString()
+              }
+            : c
+        )
+      );
+      fetchChecks();
       if (historyCheck && historyCheck.id === id) {
         const data = await api.healthChecks.get(id);
         setHistoryCheck(data);
@@ -182,6 +223,66 @@ export default function HealthCheckMonitor({ activeApplicationId }) {
     }
   };
 
+  const handleOpenDirectCron = (check) => {
+    if (!check) return;
+    setCronModalCheck(check);
+    const cur = check.cron_schedule || check.pg_cron?.schedule || intervalToCronExpression(check.interval_minutes);
+    const matched = CRON_PRESETS.find(p => p.value === cur && p.value !== 'custom');
+    if (matched) {
+      setDirectCronPreset(matched.value);
+      setDirectCronCustom(matched.value);
+    } else {
+      setDirectCronPreset('custom');
+      setDirectCronCustom(cur || '0 0 * * *');
+    }
+    setDirectCronSuccessMsg('');
+  };
+
+  const handleCloseDirectCron = () => {
+    setCronModalCheck(null);
+    setSavingDirectCron(false);
+    setDirectCronSuccessMsg('');
+  };
+
+  const handleSaveDirectCron = async (e) => {
+    if (e) e.preventDefault();
+    if (!cronModalCheck) return;
+
+    const finalCron = directCronPreset === 'custom' ? directCronCustom.trim() : directCronPreset;
+    if (!isValidCron(finalCron)) {
+      alert('Please provide a valid 5-part cron expression (e.g. 0 0 * * *)');
+      return;
+    }
+
+    setSavingDirectCron(true);
+    try {
+      const res = await api.healthChecks.updateCron(cronModalCheck.id, finalCron);
+      const updatedCheck = res.check || {};
+      setChecks(prev =>
+        prev.map(c =>
+          c.id === cronModalCheck.id
+            ? {
+                ...c,
+                ...updatedCheck,
+                cron_schedule: finalCron,
+                cron_description: describeCron(finalCron),
+                pg_cron: res.pg_cron || c.pg_cron
+              }
+            : c
+        )
+      );
+      setDirectCronSuccessMsg(`✓ Schedule updated to: ${finalCron} (${describeCron(finalCron)})`);
+      setTimeout(() => {
+        handleCloseDirectCron();
+        fetchChecks();
+      }, 900);
+    } catch (err) {
+      alert(`Failed to update cron schedule: ${err.message}`);
+    } finally {
+      setSavingDirectCron(false);
+    }
+  };
+
   const handleCreate = async (e) => {
     e.preventDefault();
     if (!name || !endpointUrl) return;
@@ -196,6 +297,13 @@ export default function HealthCheckMonitor({ activeApplicationId }) {
       }
     }
 
+    const finalCron = addCronPreset === 'custom' ? addCronCustom.trim() : addCronPreset;
+    if (!isValidCron(finalCron)) {
+      alert('Please enter a valid 5-part cron expression (e.g. */5 * * * *)');
+      return;
+    }
+    const computedMinutes = cronToIntervalMinutes(finalCron);
+
     setSaving(true);
     try {
       const appId = activeApplicationId || (checks[0]?.application_id || 'default');
@@ -204,7 +312,10 @@ export default function HealthCheckMonitor({ activeApplicationId }) {
         name,
         endpoint_url: endpointUrl,
         method,
-        interval_minutes: Number(intervalMinutes),
+        headers: headersStr.trim() || null,
+        request_body: requestBodyStr.trim() || null,
+        interval_minutes: computedMinutes,
+        cron_schedule: finalCron,
         timeout_ms: Number(timeoutMs),
         expected_status: Number(expectedStatus),
         expected_json_payload: parsedJson,
@@ -212,7 +323,11 @@ export default function HealthCheckMonitor({ activeApplicationId }) {
       });
       setName('');
       setEndpointUrl('');
+      setHeadersStr('');
+      setRequestBodyStr('');
       setExpectedJsonStr('');
+      setAddCronPreset('*/5 * * * *');
+      setAddCronCustom('*/5 * * * *');
       setIsAddOpen(false);
       fetchChecks();
     } catch (err) {
@@ -228,9 +343,34 @@ export default function HealthCheckMonitor({ activeApplicationId }) {
     setEditName(check.name || '');
     setEditEndpointUrl(check.endpoint_url || '');
     setEditMethod(check.method || 'GET');
+    setEditHeadersStr(
+      check.headers
+        ? (typeof check.headers === 'object'
+            ? JSON.stringify(check.headers, null, 2)
+            : String(check.headers))
+        : ''
+    );
+    setEditRequestBodyStr(
+      check.request_body !== undefined && check.request_body !== null
+        ? (typeof check.request_body === 'object'
+            ? JSON.stringify(check.request_body, null, 2)
+            : String(check.request_body))
+        : ''
+    );
     setEditIntervalMinutes(check.interval_minutes || 5);
     setEditTimeoutMs(check.timeout_ms || 5000);
     setEditExpectedStatus(check.expected_status || 200);
+
+    const cur = check.cron_schedule || check.pg_cron?.schedule || intervalToCronExpression(check.interval_minutes);
+    const matched = CRON_PRESETS.find(p => p.value === cur && p.value !== 'custom');
+    if (matched) {
+      setEditCronPreset(matched.value);
+      setEditCronCustom(matched.value);
+    } else {
+      setEditCronPreset('custom');
+      setEditCronCustom(cur || '0 0 * * *');
+    }
+
     setEditExpectedJsonStr(
       check.expected_json_payload
         ? (typeof check.expected_json_payload === 'string'
@@ -264,13 +404,23 @@ export default function HealthCheckMonitor({ activeApplicationId }) {
       }
     }
 
+    const finalEditCron = editCronPreset === 'custom' ? editCronCustom.trim() : editCronPreset;
+    if (!isValidCron(finalEditCron)) {
+      alert('Please enter a valid 5-part cron expression (e.g. 0 0 * * *)');
+      return;
+    }
+    const editMinutes = cronToIntervalMinutes(finalEditCron);
+
     setSavingEdit(true);
     try {
       const payload = {
         name: editName.trim(),
         endpoint_url: editEndpointUrl.trim(),
         method: editMethod,
-        interval_minutes: Number(editIntervalMinutes),
+        headers: editHeadersStr.trim() || null,
+        request_body: editRequestBodyStr.trim() || null,
+        interval_minutes: editMinutes,
+        cron_schedule: finalEditCron,
         timeout_ms: Number(editTimeoutMs),
         expected_status: Number(editExpectedStatus),
         expected_json_payload: parsedJson,
@@ -278,7 +428,20 @@ export default function HealthCheckMonitor({ activeApplicationId }) {
       };
 
       const updated = await api.healthChecks.update(editingCheck.id, payload);
-      setChecks(prev => prev.map(c => (c.id === editingCheck.id ? { ...c, ...updated } : c)));
+      setChecks(prev =>
+        prev.map(c =>
+          c.id === editingCheck.id
+            ? {
+                ...c,
+                ...updated,
+                headers: updated.headers !== undefined ? updated.headers : (editHeadersStr.trim() || null),
+                request_body: updated.request_body !== undefined ? updated.request_body : (editRequestBodyStr.trim() || null),
+                cron_schedule: finalEditCron,
+                cron_description: describeCron(finalEditCron)
+              }
+            : c
+        )
+      );
       handleCloseEdit();
       fetchChecks();
     } catch (err) {
@@ -288,9 +451,11 @@ export default function HealthCheckMonitor({ activeApplicationId }) {
     }
   };
 
-  // Cron expression helper for modal preview
-  const previewCronExpr = Number(intervalMinutes) === 1 ? '* * * * *' : `*/${Number(intervalMinutes) || 5} * * * *`;
-  const editPreviewCronExpr = Number(editIntervalMinutes) === 1 ? '* * * * *' : `*/${Number(editIntervalMinutes) || 5} * * * *`;
+  // Helper for resolved cron preview strings
+  const getResolvedCron = (preset, custom) => (preset === 'custom' ? (custom.trim() || '* * * * *') : preset);
+  const addResolvedCron = getResolvedCron(addCronPreset, addCronCustom);
+  const editResolvedCron = getResolvedCron(editCronPreset, editCronCustom);
+  const directResolvedCron = getResolvedCron(directCronPreset, directCronCustom);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
@@ -420,6 +585,15 @@ export default function HealthCheckMonitor({ activeApplicationId }) {
                         </td>
                         <td style={{ padding: '10px 12px', textAlign: 'right', whiteSpace: 'nowrap' }}>
                           <div style={{ display: 'inline-flex', gap: '6px' }}>
+                            <button
+                              onClick={() => handleOpenDirectCron(matchedCheck || { id: targetCheckId, name: targetCheckName, cron_schedule: job.schedule, interval_minutes: job.interval_minutes })}
+                              className="btn-neo-cyan"
+                              style={{ padding: '4px 10px', fontSize: '0.74rem', display: 'inline-flex', alignItems: 'center', gap: '5px' }}
+                              title="Update cron schedule directly"
+                            >
+                              <Clock size={13} strokeWidth={2.5} />
+                              <span>Cron</span>
+                            </button>
                             {matchedCheck && (
                               <button
                                 onClick={() => handleOpenEdit(matchedCheck)}
@@ -493,15 +667,92 @@ export default function HealthCheckMonitor({ activeApplicationId }) {
                       <Database size={12} />
                       <span>PG_CRON #{pgCronData?.jobid || check.id.slice(0, 6)}: {pgCronData?.active ? 'ACTIVE' : 'PAUSED'}</span>
                     </span>
+
+                    {/* Headers & Body Badges */}
+                    {check.headers && (
+                      <span
+                        className="neo-badge neo-badge-cyan font-mono"
+                        style={{ fontSize: '0.72rem', display: 'inline-flex', alignItems: 'center', gap: '4px' }}
+                        title={typeof check.headers === 'object' ? JSON.stringify(check.headers) : String(check.headers)}
+                      >
+                        <Code size={12} />
+                        <span>HEADERS: {typeof check.headers === 'object' ? Object.keys(check.headers).length : 'SET'}</span>
+                      </span>
+                    )}
+
+                    {check.request_body && (
+                      <span
+                        className="neo-badge neo-badge-yellow font-mono"
+                        style={{ fontSize: '0.72rem', display: 'inline-flex', alignItems: 'center', gap: '4px' }}
+                        title={typeof check.request_body === 'object' ? JSON.stringify(check.request_body) : String(check.request_body)}
+                      >
+                        <Terminal size={12} />
+                        <span>BODY PAYLOAD</span>
+                      </span>
+                    )}
                   </div>
 
                   <div className="font-mono" style={{ fontSize: '0.88rem', fontWeight: 900, wordBreak: 'break-all', color: 'var(--neo-black)' }}>
                     {check.endpoint_url}
                   </div>
+
+                  {/* Headers and Body preview bar */}
+                  {(check.headers || check.request_body) && (
+                    <div style={{ marginTop: '8px', display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
+                      {check.headers && (
+                        <div style={{
+                          background: 'var(--neo-surface-3)',
+                          border: '1px solid var(--neo-border-color)',
+                          padding: '3px 8px',
+                          fontSize: '0.74rem',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '6px'
+                        }}>
+                          <span style={{ fontWeight: 900, color: 'var(--neo-cyan)' }}>HEADERS:</span>
+                          <span className="font-mono" style={{ opacity: 0.9 }}>
+                            {typeof check.headers === 'object'
+                              ? Object.entries(check.headers).map(([k, v]) => `${k}: ${v}`).join(' | ')
+                              : String(check.headers)}
+                          </span>
+                        </div>
+                      )}
+                      {check.request_body && (
+                        <div style={{
+                          background: 'var(--neo-surface-3)',
+                          border: '1px solid var(--neo-border-color)',
+                          padding: '3px 8px',
+                          fontSize: '0.74rem',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '6px'
+                        }}>
+                          <span style={{ fontWeight: 900, color: 'var(--neo-yellow)' }}>BODY:</span>
+                          <span className="font-mono" style={{ opacity: 0.9 }}>
+                            {typeof check.request_body === 'object'
+                              ? JSON.stringify(check.request_body)
+                              : String(check.request_body)}
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 {/* Right Action buttons */}
                 <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+                  {/* Direct Cron Schedule Button */}
+                  <button
+                    id={`btn-cron-${check.id}`}
+                    onClick={() => handleOpenDirectCron(check)}
+                    className="btn-neo-cyan"
+                    style={{ padding: '8px 14px', fontSize: '0.8rem', display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+                    title="Update cron schedule directly (Daily, Weekly, Hourly, Custom)"
+                  >
+                    <Clock size={14} strokeWidth={2.5} />
+                    <span>CRON SCHEDULE</span>
+                  </button>
+
                   {/* Maintenance Toggle */}
                   <button
                     id={`btn-maintenance-${check.id}`}
@@ -608,16 +859,53 @@ export default function HealthCheckMonitor({ activeApplicationId }) {
                 </div>
 
                 <div>
-                  <div style={{ fontSize: '0.72rem', fontWeight: 900, textTransform: 'uppercase', opacity: 0.8 }}>PG_CRON SCHEDULE</div>
-                  <div className="font-mono font-bold" style={{ fontSize: '0.92rem', marginTop: '2px', color: 'var(--neo-cyan)' }}>
-                    {pgCronData?.schedule || `*/${check.interval_minutes} * * * *`}
+                  <div style={{ fontSize: '0.72rem', fontWeight: 900, textTransform: 'uppercase', opacity: 0.8, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <span>CRON SCHEDULE</span>
+                    <button
+                      type="button"
+                      onClick={() => handleOpenDirectCron(check)}
+                      style={{ background: 'none', border: 'none', padding: 0, fontSize: '0.66rem', color: 'var(--neo-cyan)', cursor: 'pointer', fontWeight: 900, textDecoration: 'underline' }}
+                      title="Update cron schedule directly"
+                    >
+                      CHANGE
+                    </button>
+                  </div>
+                  <div style={{ marginTop: '2px' }}>
+                    <button
+                      type="button"
+                      id={`badge-cron-${check.id}`}
+                      onClick={() => handleOpenDirectCron(check)}
+                      className="font-mono font-bold"
+                      style={{
+                        background: 'var(--neo-yellow)',
+                        color: '#000',
+                        padding: '2px 8px',
+                        border: '1.5px solid #000',
+                        cursor: 'pointer',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '5px',
+                        fontSize: '0.84rem'
+                      }}
+                      title="Click to update cron schedule directly"
+                    >
+                      <Clock size={11} strokeWidth={3} />
+                      <span>{check.cron_schedule || pgCronData?.schedule || intervalToCronExpression(check.interval_minutes)}</span>
+                    </button>
+                  </div>
+                  <div style={{ fontSize: '0.72rem', fontWeight: 800, color: 'var(--neo-cyan)', marginTop: '3px' }}>
+                    {check.cron_description || describeCron(check.cron_schedule || pgCronData?.schedule || intervalToCronExpression(check.interval_minutes))}
                   </div>
                 </div>
 
                 <div>
                   <div style={{ fontSize: '0.72rem', fontWeight: 900, textTransform: 'uppercase', opacity: 0.8 }}>NEXT PG_CRON RUN</div>
-                  <div className="font-mono" style={{ fontSize: '0.88rem', fontWeight: 800, marginTop: '2px' }}>
-                    {pgCronData?.next_run_at ? new Date(pgCronData.next_run_at).toLocaleTimeString() : `In ${check.interval_minutes}m`}
+                  <div className="font-mono" style={{ fontSize: '0.84rem', fontWeight: 800, marginTop: '2px' }}>
+                    {pgCronData?.next_run_at
+                      ? new Date(pgCronData.next_run_at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+                      : getNextCronRun(check.cron_schedule || intervalToCronExpression(check.interval_minutes))
+                        ? new Date(getNextCronRun(check.cron_schedule || intervalToCronExpression(check.interval_minutes))).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+                        : `In ${check.interval_minutes}m`}
                   </div>
                 </div>
               </div>
@@ -717,18 +1005,22 @@ export default function HealthCheckMonitor({ activeApplicationId }) {
                 />
               </div>
 
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '14px', marginBottom: '16px' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '14px', marginBottom: '16px' }}>
                 <div>
                   <label style={{ display: 'block', fontSize: '0.78rem', fontWeight: 900, marginBottom: '4px' }}>
                     HTTP METHOD
                   </label>
                   <select
+                    id="select-hc-method"
                     value={method}
                     onChange={(e) => setMethod(e.target.value)}
                     className="neo-input font-mono"
                   >
                     <option value="GET">GET</option>
                     <option value="POST">POST</option>
+                    <option value="PUT">PUT</option>
+                    <option value="PATCH">PATCH</option>
+                    <option value="DELETE">DELETE</option>
                     <option value="HEAD">HEAD</option>
                   </select>
                 </div>
@@ -738,26 +1030,151 @@ export default function HealthCheckMonitor({ activeApplicationId }) {
                     EXPECTED CODE
                   </label>
                   <input
+                    id="input-hc-status"
                     type="number"
                     value={expectedStatus}
                     onChange={(e) => setExpectedStatus(e.target.value)}
                     className="neo-input font-mono"
                   />
                 </div>
+              </div>
 
-                <div>
-                  <label style={{ display: 'block', fontSize: '0.78rem', fontWeight: 900, marginBottom: '4px' }}>
-                    INTERVAL (MINS)
+              {/* Custom HTTP Request Headers */}
+              <div style={{ marginBottom: '16px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                  <label htmlFor="input-hc-headers" style={{ fontSize: '0.78rem', fontWeight: 900 }}>
+                    CUSTOM REQUEST HEADERS (OPTIONAL)
                   </label>
-                  <input
-                    type="number"
-                    min="1"
-                    max="60"
-                    value={intervalMinutes}
-                    onChange={(e) => setIntervalMinutes(e.target.value)}
-                    className="neo-input font-mono"
-                  />
+                  <span style={{ fontSize: '0.7rem', opacity: 0.7, fontWeight: 700 }}>
+                    JSON or "Header: Value" per line
+                  </span>
                 </div>
+                <textarea
+                  id="input-hc-headers"
+                  rows={2}
+                  placeholder={'{\n  "Authorization": "Bearer token123",\n  "X-API-Key": "my-secret-key"\n}'}
+                  value={headersStr}
+                  onChange={(e) => setHeadersStr(e.target.value)}
+                  className="neo-input font-mono"
+                  style={{ resize: 'vertical', fontSize: '0.8rem' }}
+                />
+              </div>
+
+              {/* Custom Request Body / Payload */}
+              <div style={{ marginBottom: '16px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                  <label htmlFor="input-hc-body" style={{ fontSize: '0.78rem', fontWeight: 900 }}>
+                    REQUEST BODY / PAYLOAD (OPTIONAL)
+                  </label>
+                  <span style={{ fontSize: '0.7rem', opacity: 0.7, fontWeight: 700 }}>
+                    JSON payload or raw text for POST / PUT / PATCH
+                  </span>
+                </div>
+                <textarea
+                  id="input-hc-body"
+                  rows={2}
+                  placeholder={'{\n  "status": "ping",\n  "source": "devbox-probe"\n}'}
+                  value={requestBodyStr}
+                  onChange={(e) => setRequestBodyStr(e.target.value)}
+                  className="neo-input font-mono"
+                  style={{ resize: 'vertical', fontSize: '0.8rem' }}
+                />
+              </div>
+
+              {/* CRON TRIGGER SCHEDULE SELECTOR */}
+              <div style={{ marginBottom: '16px', background: 'var(--neo-surface-2)', padding: '14px', border: 'var(--neo-border-2)' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                  <label style={{ display: 'block', fontSize: '0.84rem', fontWeight: 900, color: 'var(--neo-cyan)' }}>
+                    ⏱ CRON TRIGGER SCHEDULE (DAILY, WEEKLY, INTERVALS)
+                  </label>
+                  <span className="neo-badge neo-badge-yellow font-mono" style={{ fontSize: '0.74rem' }}>
+                    {addResolvedCron}
+                  </span>
+                </div>
+
+                {/* Quick preset chips */}
+                <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginBottom: '10px' }}>
+                  {[
+                    { label: '5 Mins', val: '*/5 * * * *' },
+                    { label: '15 Mins', val: '*/15 * * * *' },
+                    { label: 'Hourly', val: '0 * * * *' },
+                    { label: 'Daily (Midnight)', val: '0 0 * * *' },
+                    { label: 'Daily (9 AM)', val: '0 9 * * *' },
+                    { label: 'Weekly (Sunday)', val: '0 0 * * 0' },
+                    { label: 'Weekly (Monday)', val: '0 9 * * 1' },
+                    { label: 'Custom...', val: 'custom' }
+                  ].map(btn => (
+                    <button
+                      key={btn.val}
+                      type="button"
+                      onClick={() => {
+                        setAddCronPreset(btn.val);
+                        if (btn.val !== 'custom') setAddCronCustom(btn.val);
+                      }}
+                      className={addCronPreset === btn.val ? 'btn-neo-cyan' : 'btn-neo-outline'}
+                      style={{ padding: '3px 8px', fontSize: '0.72rem' }}
+                    >
+                      {btn.label}
+                    </button>
+                  ))}
+                </div>
+
+                <select
+                  value={addCronPreset}
+                  onChange={(e) => {
+                    setAddCronPreset(e.target.value);
+                    if (e.target.value !== 'custom') setAddCronCustom(e.target.value);
+                  }}
+                  className="neo-input font-mono"
+                  style={{ marginBottom: addCronPreset === 'custom' ? '10px' : '0' }}
+                >
+                  <optgroup label="Minutes">
+                    <option value="* * * * *">Every minute (* * * * *)</option>
+                    <option value="*/5 * * * *">Every 5 minutes (*/5 * * * *)</option>
+                    <option value="*/10 * * * *">Every 10 minutes (*/10 * * * *)</option>
+                    <option value="*/15 * * * *">Every 15 minutes (*/15 * * * *)</option>
+                    <option value="*/30 * * * *">Every 30 minutes (*/30 * * * *)</option>
+                  </optgroup>
+                  <optgroup label="Hourly">
+                    <option value="0 * * * *">Hourly at :00 (0 * * * *)</option>
+                    <option value="0 */2 * * *">Every 2 hours (0 */2 * * *)</option>
+                    <option value="0 */6 * * *">Every 6 hours (0 */6 * * *)</option>
+                    <option value="0 */12 * * *">Every 12 hours (0 */12 * * *)</option>
+                  </optgroup>
+                  <optgroup label="Daily">
+                    <option value="0 0 * * *">Daily at Midnight 00:00 UTC (0 0 * * *)</option>
+                    <option value="0 9 * * *">Daily at 09:00 AM UTC (0 9 * * *)</option>
+                    <option value="0 18 * * *">Daily at 06:00 PM UTC (0 18 * * *)</option>
+                  </optgroup>
+                  <optgroup label="Weekly">
+                    <option value="0 0 * * 0">Weekly on Sunday at Midnight (0 0 * * 0)</option>
+                    <option value="0 9 * * 1">Weekly on Monday at 09:00 AM (0 9 * * 1)</option>
+                  </optgroup>
+                  <optgroup label="Monthly">
+                    <option value="0 0 1 * *">Monthly on 1st at Midnight (0 0 1 * *)</option>
+                  </optgroup>
+                  <optgroup label="Custom">
+                    <option value="custom">Custom Cron Expression...</option>
+                  </optgroup>
+                </select>
+
+                {addCronPreset === 'custom' && (
+                  <div style={{ marginTop: '10px' }}>
+                    <label style={{ display: 'block', fontSize: '0.74rem', fontWeight: 900, marginBottom: '4px' }}>
+                      CUSTOM 5-FIELD CRON EXPRESSION (minute hour dom month dow):
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="e.g. 0 0 * * * or 30 2 * * 1-5"
+                      value={addCronCustom}
+                      onChange={(e) => setAddCronCustom(e.target.value)}
+                      className="neo-input font-mono font-bold"
+                    />
+                    <div style={{ fontSize: '0.72rem', marginTop: '4px', color: isValidCron(addCronCustom) ? '#16A34A' : '#E11D48', fontWeight: 800 }}>
+                      {isValidCron(addCronCustom) ? `✓ Valid Pattern: ${describeCron(addCronCustom)}` : '✗ Invalid 5-field cron pattern'}
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* Supabase pg_cron Schedule Callout */}
@@ -773,14 +1190,17 @@ export default function HealthCheckMonitor({ activeApplicationId }) {
               }}>
                 <div>
                   <div style={{ fontSize: '0.74rem', fontWeight: 900, textTransform: 'uppercase', color: 'var(--neo-cyan)' }}>
-                    SUPABASE pg_cron SCHEDULE EXPRESSION
+                    SCHEDULE EXPLANATION & NEXT RUN
                   </div>
-                  <div style={{ fontSize: '0.78rem', opacity: 0.8, marginTop: '2px' }}>
-                    PostgreSQL will automatically trigger this probe via <code className="font-mono">pg_net</code>
+                  <div style={{ fontSize: '0.8rem', opacity: 0.95, marginTop: '2px', fontWeight: 700 }}>
+                    {describeCron(addResolvedCron)}
                   </div>
                 </div>
-                <div className="neo-badge neo-badge-yellow font-mono font-bold" style={{ fontSize: '0.92rem' }}>
-                  {previewCronExpr}
+                <div style={{ textAlign: 'right' }}>
+                  <div style={{ fontSize: '0.7rem', fontWeight: 900, opacity: 0.7 }}>NEXT RUN PREVIEW</div>
+                  <div className="font-mono" style={{ fontSize: '0.8rem', fontWeight: 800 }}>
+                    {getNextCronRun(addResolvedCron) ? new Date(getNextCronRun(addResolvedCron)).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—'}
+                  </div>
                 </div>
               </div>
 
@@ -904,7 +1324,7 @@ export default function HealthCheckMonitor({ activeApplicationId }) {
                 />
               </div>
 
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '14px', marginBottom: '16px' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '14px', marginBottom: '16px' }}>
                 <div>
                   <label style={{ display: 'block', fontSize: '0.78rem', fontWeight: 900, marginBottom: '4px' }}>
                     HTTP METHOD
@@ -917,6 +1337,9 @@ export default function HealthCheckMonitor({ activeApplicationId }) {
                   >
                     <option value="GET">GET</option>
                     <option value="POST">POST</option>
+                    <option value="PUT">PUT</option>
+                    <option value="PATCH">PATCH</option>
+                    <option value="DELETE">DELETE</option>
                     <option value="HEAD">HEAD</option>
                   </select>
                 </div>
@@ -933,21 +1356,146 @@ export default function HealthCheckMonitor({ activeApplicationId }) {
                     className="neo-input font-mono"
                   />
                 </div>
+              </div>
 
-                <div>
-                  <label style={{ display: 'block', fontSize: '0.78rem', fontWeight: 900, marginBottom: '4px' }}>
-                    INTERVAL (MINS)
+              {/* Custom HTTP Request Headers */}
+              <div style={{ marginBottom: '16px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                  <label htmlFor="input-edit-hc-headers" style={{ fontSize: '0.78rem', fontWeight: 900 }}>
+                    CUSTOM REQUEST HEADERS (OPTIONAL)
                   </label>
-                  <input
-                    id="input-edit-hc-interval"
-                    type="number"
-                    min="1"
-                    max="60"
-                    value={editIntervalMinutes}
-                    onChange={(e) => setEditIntervalMinutes(e.target.value)}
-                    className="neo-input font-mono"
-                  />
+                  <span style={{ fontSize: '0.7rem', opacity: 0.7, fontWeight: 700 }}>
+                    JSON or "Header: Value" per line
+                  </span>
                 </div>
+                <textarea
+                  id="input-edit-hc-headers"
+                  rows={2}
+                  placeholder={'{\n  "Authorization": "Bearer token123",\n  "X-API-Key": "my-secret-key"\n}'}
+                  value={editHeadersStr}
+                  onChange={(e) => setEditHeadersStr(e.target.value)}
+                  className="neo-input font-mono"
+                  style={{ resize: 'vertical', fontSize: '0.8rem' }}
+                />
+              </div>
+
+              {/* Custom Request Body / Payload */}
+              <div style={{ marginBottom: '16px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                  <label htmlFor="input-edit-hc-body" style={{ fontSize: '0.78rem', fontWeight: 900 }}>
+                    REQUEST BODY / PAYLOAD (OPTIONAL)
+                  </label>
+                  <span style={{ fontSize: '0.7rem', opacity: 0.7, fontWeight: 700 }}>
+                    JSON payload or raw text for POST / PUT / PATCH
+                  </span>
+                </div>
+                <textarea
+                  id="input-edit-hc-body"
+                  rows={2}
+                  placeholder={'{\n  "status": "ping",\n  "source": "devbox-probe"\n}'}
+                  value={editRequestBodyStr}
+                  onChange={(e) => setEditRequestBodyStr(e.target.value)}
+                  className="neo-input font-mono"
+                  style={{ resize: 'vertical', fontSize: '0.8rem' }}
+                />
+              </div>
+
+              {/* CRON TRIGGER SCHEDULE SELECTOR */}
+              <div style={{ marginBottom: '16px', background: 'var(--neo-surface-2)', padding: '14px', border: 'var(--neo-border-2)' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                  <label style={{ display: 'block', fontSize: '0.84rem', fontWeight: 900, color: 'var(--neo-cyan)' }}>
+                    ⏱ CRON TRIGGER SCHEDULE (DAILY, WEEKLY, INTERVALS)
+                  </label>
+                  <span className="neo-badge neo-badge-yellow font-mono" style={{ fontSize: '0.74rem' }}>
+                    {editResolvedCron}
+                  </span>
+                </div>
+
+                {/* Quick preset chips */}
+                <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginBottom: '10px' }}>
+                  {[
+                    { label: '5 Mins', val: '*/5 * * * *' },
+                    { label: '15 Mins', val: '*/15 * * * *' },
+                    { label: 'Hourly', val: '0 * * * *' },
+                    { label: 'Daily (Midnight)', val: '0 0 * * *' },
+                    { label: 'Daily (9 AM)', val: '0 9 * * *' },
+                    { label: 'Weekly (Sunday)', val: '0 0 * * 0' },
+                    { label: 'Weekly (Monday)', val: '0 9 * * 1' },
+                    { label: 'Custom...', val: 'custom' }
+                  ].map(btn => (
+                    <button
+                      key={btn.val}
+                      type="button"
+                      onClick={() => {
+                        setEditCronPreset(btn.val);
+                        if (btn.val !== 'custom') setEditCronCustom(btn.val);
+                      }}
+                      className={editCronPreset === btn.val ? 'btn-neo-cyan' : 'btn-neo-outline'}
+                      style={{ padding: '3px 8px', fontSize: '0.72rem' }}
+                    >
+                      {btn.label}
+                    </button>
+                  ))}
+                </div>
+
+                <select
+                  id="select-edit-hc-schedule"
+                  value={editCronPreset}
+                  onChange={(e) => {
+                    setEditCronPreset(e.target.value);
+                    if (e.target.value !== 'custom') setEditCronCustom(e.target.value);
+                  }}
+                  className="neo-input font-mono"
+                  style={{ marginBottom: editCronPreset === 'custom' ? '10px' : '0' }}
+                >
+                  <optgroup label="Minutes">
+                    <option value="* * * * *">Every minute (* * * * *)</option>
+                    <option value="*/5 * * * *">Every 5 minutes (*/5 * * * *)</option>
+                    <option value="*/10 * * * *">Every 10 minutes (*/10 * * * *)</option>
+                    <option value="*/15 * * * *">Every 15 minutes (*/15 * * * *)</option>
+                    <option value="*/30 * * * *">Every 30 minutes (*/30 * * * *)</option>
+                  </optgroup>
+                  <optgroup label="Hourly">
+                    <option value="0 * * * *">Hourly at :00 (0 * * * *)</option>
+                    <option value="0 */2 * * *">Every 2 hours (0 */2 * * *)</option>
+                    <option value="0 */6 * * *">Every 6 hours (0 */6 * * *)</option>
+                    <option value="0 */12 * * *">Every 12 hours (0 */12 * * *)</option>
+                  </optgroup>
+                  <optgroup label="Daily">
+                    <option value="0 0 * * *">Daily at Midnight 00:00 UTC (0 0 * * *)</option>
+                    <option value="0 9 * * *">Daily at 09:00 AM UTC (0 9 * * *)</option>
+                    <option value="0 18 * * *">Daily at 06:00 PM UTC (0 18 * * *)</option>
+                  </optgroup>
+                  <optgroup label="Weekly">
+                    <option value="0 0 * * 0">Weekly on Sunday at Midnight (0 0 * * 0)</option>
+                    <option value="0 9 * * 1">Weekly on Monday at 09:00 AM (0 9 * * 1)</option>
+                  </optgroup>
+                  <optgroup label="Monthly">
+                    <option value="0 0 1 * *">Monthly on 1st at Midnight (0 0 1 * *)</option>
+                  </optgroup>
+                  <optgroup label="Custom">
+                    <option value="custom">Custom Cron Expression...</option>
+                  </optgroup>
+                </select>
+
+                {editCronPreset === 'custom' && (
+                  <div style={{ marginTop: '10px' }}>
+                    <label style={{ display: 'block', fontSize: '0.74rem', fontWeight: 900, marginBottom: '4px' }}>
+                      CUSTOM 5-FIELD CRON EXPRESSION (minute hour dom month dow):
+                    </label>
+                    <input
+                      id="input-edit-hc-custom-cron"
+                      type="text"
+                      placeholder="e.g. 0 0 * * * or 30 2 * * 1-5"
+                      value={editCronCustom}
+                      onChange={(e) => setEditCronCustom(e.target.value)}
+                      className="neo-input font-mono font-bold"
+                    />
+                    <div style={{ fontSize: '0.72rem', marginTop: '4px', color: isValidCron(editCronCustom) ? '#16A34A' : '#E11D48', fontWeight: 800 }}>
+                      {isValidCron(editCronCustom) ? `✓ Valid Pattern: ${describeCron(editCronCustom)}` : '✗ Invalid 5-field cron pattern'}
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* Supabase pg_cron Schedule Callout */}
@@ -963,14 +1511,17 @@ export default function HealthCheckMonitor({ activeApplicationId }) {
               }}>
                 <div>
                   <div style={{ fontSize: '0.74rem', fontWeight: 900, textTransform: 'uppercase', color: 'var(--neo-cyan)' }}>
-                    SUPABASE pg_cron SCHEDULE EXPRESSION
+                    SCHEDULE EXPLANATION & NEXT RUN
                   </div>
-                  <div style={{ fontSize: '0.78rem', opacity: 0.8, marginTop: '2px' }}>
-                    PostgreSQL will automatically trigger this probe via <code className="font-mono">pg_net</code>
+                  <div style={{ fontSize: '0.8rem', opacity: 0.95, marginTop: '2px', fontWeight: 700 }}>
+                    {describeCron(editResolvedCron)}
                   </div>
                 </div>
-                <div className="neo-badge neo-badge-yellow font-mono font-bold" style={{ fontSize: '0.92rem' }}>
-                  {editPreviewCronExpr}
+                <div style={{ textAlign: 'right' }}>
+                  <div style={{ fontSize: '0.7rem', fontWeight: 900, opacity: 0.7 }}>NEXT RUN PREVIEW</div>
+                  <div className="font-mono" style={{ fontSize: '0.8rem', fontWeight: 800 }}>
+                    {getNextCronRun(editResolvedCron) ? new Date(getNextCronRun(editResolvedCron)).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—'}
+                  </div>
                 </div>
               </div>
 
@@ -1264,6 +1815,258 @@ export default function HealthCheckMonitor({ activeApplicationId }) {
                 </button>
               </div>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Direct Cron Schedule Update Modal */}
+      {cronModalCheck && (
+        <div className="neo-modal-overlay" onClick={handleCloseDirectCron}>
+          <div className="neo-modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '640px' }}>
+            <div
+              className="neo-modal-header neo-modal-header-cyan"
+              style={{
+                padding: '20px 24px',
+                borderBottom: 'var(--neo-border-4)',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                background: 'var(--neo-cyan)',
+                color: '#000000'
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <Clock size={20} color="#000" strokeWidth={3} />
+                <h3 style={{ fontSize: '1.25rem', color: '#000000', margin: 0, fontWeight: 900 }}>
+                  UPDATE CRON SCHEDULE DIRECTLY
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={handleCloseDirectCron}
+                className="btn-neo-outline"
+                style={{ padding: '4px 8px', background: '#000000', color: '#FFFFFF', border: '2px solid #000000' }}
+              >
+                ✕
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveDirectCron} style={{ padding: '24px' }}>
+              {/* Probe info banner */}
+              <div
+                style={{
+                  background: 'var(--neo-surface-3)',
+                  border: 'var(--neo-border-2)',
+                  padding: '12px 14px',
+                  marginBottom: '20px'
+                }}
+              >
+                <div style={{ fontSize: '0.74rem', fontWeight: 900, textTransform: 'uppercase', opacity: 0.8 }}>
+                  TARGET HEALTH PROBE
+                </div>
+                <div style={{ fontSize: '1.15rem', fontWeight: 900, marginTop: '2px' }}>
+                  {cronModalCheck.name}
+                </div>
+                <div className="font-mono text-xs opacity-80" style={{ wordBreak: 'break-all', marginTop: '2px' }}>
+                  {cronModalCheck.endpoint_url}
+                </div>
+              </div>
+
+              {/* Quick Preset Selector Buttons */}
+              <div style={{ marginBottom: '18px' }}>
+                <label style={{ display: 'block', fontSize: '0.84rem', fontWeight: 900, marginBottom: '8px' }}>
+                  CHOOSE A CRON TRIGGER FREQUENCY:
+                </label>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '8px', marginBottom: '14px' }}>
+                  {[
+                    { label: 'Every 1 Min', expr: '* * * * *', cat: 'Minutes' },
+                    { label: 'Every 5 Mins', expr: '*/5 * * * *', cat: 'Minutes' },
+                    { label: 'Every 15 Mins', expr: '*/15 * * * *', cat: 'Minutes' },
+                    { label: 'Every 30 Mins', expr: '*/30 * * * *', cat: 'Minutes' },
+                    { label: 'Hourly (:00)', expr: '0 * * * *', cat: 'Hourly' },
+                    { label: 'Every 2 Hours', expr: '0 */2 * * *', cat: 'Hourly' },
+                    { label: 'Every 6 Hours', expr: '0 */6 * * *', cat: 'Hourly' },
+                    { label: 'Daily (Midnight)', expr: '0 0 * * *', cat: 'Daily' },
+                    { label: 'Daily (09:00 AM)', expr: '0 9 * * *', cat: 'Daily' },
+                    { label: 'Daily (06:00 PM)', expr: '0 18 * * *', cat: 'Daily' },
+                    { label: 'Weekly (Sunday)', expr: '0 0 * * 0', cat: 'Weekly' },
+                    { label: 'Weekly (Monday)', expr: '0 9 * * 1', cat: 'Weekly' },
+                    { label: 'Monthly (1st)', expr: '0 0 1 * *', cat: 'Monthly' },
+                    { label: 'Custom Cron...', expr: 'custom', cat: 'Custom' }
+                  ].map(opt => {
+                    const isSelected = directCronPreset === opt.expr;
+                    return (
+                      <button
+                        key={opt.expr}
+                        type="button"
+                        onClick={() => {
+                          setDirectCronPreset(opt.expr);
+                          if (opt.expr !== 'custom') setDirectCronCustom(opt.expr);
+                        }}
+                        className={isSelected ? 'btn-neo-cyan' : 'btn-neo-outline'}
+                        style={{
+                          padding: '8px 10px',
+                          fontSize: '0.78rem',
+                          textAlign: 'center',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          gap: '2px'
+                        }}
+                      >
+                        <span style={{ fontWeight: 900 }}>{opt.label}</span>
+                        {opt.expr !== 'custom' && (
+                          <span className="font-mono text-xs opacity-75">{opt.expr}</span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {/* Dropdown for comprehensive list */}
+                <select
+                  id="select-direct-cron-preset"
+                  value={directCronPreset}
+                  onChange={(e) => {
+                    setDirectCronPreset(e.target.value);
+                    if (e.target.value !== 'custom') setDirectCronCustom(e.target.value);
+                  }}
+                  className="neo-input font-mono"
+                  style={{ marginBottom: directCronPreset === 'custom' ? '12px' : '0' }}
+                >
+                  <optgroup label="Minutes">
+                    <option value="* * * * *">Every minute (* * * * *)</option>
+                    <option value="*/5 * * * *">Every 5 minutes (*/5 * * * *)</option>
+                    <option value="*/10 * * * *">Every 10 minutes (*/10 * * * *)</option>
+                    <option value="*/15 * * * *">Every 15 minutes (*/15 * * * *)</option>
+                    <option value="*/30 * * * *">Every 30 minutes (*/30 * * * *)</option>
+                  </optgroup>
+                  <optgroup label="Hourly">
+                    <option value="0 * * * *">Hourly at minute 0 (0 * * * *)</option>
+                    <option value="0 */2 * * *">Every 2 hours (0 */2 * * *)</option>
+                    <option value="0 */6 * * *">Every 6 hours (0 */6 * * *)</option>
+                    <option value="0 */12 * * *">Every 12 hours (0 */12 * * *)</option>
+                  </optgroup>
+                  <optgroup label="Daily">
+                    <option value="0 0 * * *">Daily at Midnight 00:00 UTC (0 0 * * *)</option>
+                    <option value="0 9 * * *">Daily at 09:00 AM UTC (0 9 * * *)</option>
+                    <option value="0 18 * * *">Daily at 06:00 PM UTC (0 18 * * *)</option>
+                  </optgroup>
+                  <optgroup label="Weekly">
+                    <option value="0 0 * * 0">Weekly on Sunday at 00:00 UTC (0 0 * * 0)</option>
+                    <option value="0 9 * * 1">Weekly on Monday at 09:00 AM UTC (0 9 * * 1)</option>
+                  </optgroup>
+                  <optgroup label="Monthly">
+                    <option value="0 0 1 * *">Monthly on 1st at 00:00 UTC (0 0 1 * *)</option>
+                  </optgroup>
+                  <optgroup label="Custom">
+                    <option value="custom">Custom Cron Expression...</option>
+                  </optgroup>
+                </select>
+
+                {directCronPreset === 'custom' && (
+                  <div style={{ marginTop: '12px' }}>
+                    <label style={{ display: 'block', fontSize: '0.78rem', fontWeight: 900, marginBottom: '6px' }}>
+                      CUSTOM 5-FIELD CRON EXPRESSION (minute hour dom month dow):
+                    </label>
+                    <input
+                      id="input-direct-cron-custom"
+                      type="text"
+                      placeholder="e.g. 0 0 * * * or 30 2 * * 1-5"
+                      value={directCronCustom}
+                      onChange={(e) => setDirectCronCustom(e.target.value)}
+                      className="neo-input font-mono font-bold"
+                      autoFocus
+                    />
+                    <div style={{ fontSize: '0.74rem', marginTop: '6px', color: isValidCron(directCronCustom) ? '#16A34A' : '#E11D48', fontWeight: 800 }}>
+                      {isValidCron(directCronCustom)
+                        ? `✓ Valid Pattern: ${describeCron(directCronCustom)}`
+                        : '✗ Invalid 5-field cron pattern (expected format: minute hour dom month dow)'}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Schedule Preview & Next Run Box */}
+              <div
+                style={{
+                  background: 'var(--neo-surface-2)',
+                  border: 'var(--neo-border-3)',
+                  padding: '14px 16px',
+                  marginBottom: '20px'
+                }}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                  <div style={{ fontSize: '0.74rem', fontWeight: 900, textTransform: 'uppercase', color: 'var(--neo-cyan)' }}>
+                    RESOLVED SCHEDULE PREVIEW
+                  </div>
+                  <code
+                    className="font-mono font-bold"
+                    style={{ background: 'var(--neo-yellow)', color: '#000', padding: '3px 8px', border: '1.5px solid #000', fontSize: '0.92rem' }}
+                  >
+                    {directResolvedCron}
+                  </code>
+                </div>
+
+                <div style={{ fontSize: '0.88rem', fontWeight: 900, marginBottom: '6px' }}>
+                  {describeCron(directResolvedCron)}
+                </div>
+
+                <div style={{ fontSize: '0.76rem', opacity: 0.85, display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <Clock size={13} strokeWidth={2.5} />
+                  <span>
+                    Next Execution:{' '}
+                    <strong>
+                      {getNextCronRun(directResolvedCron)
+                        ? new Date(getNextCronRun(directResolvedCron)).toLocaleString()
+                        : 'Pending'}
+                    </strong>
+                  </span>
+                </div>
+              </div>
+
+              {/* Success Feedback Alert */}
+              {directCronSuccessMsg && (
+                <div
+                  style={{
+                    background: 'var(--neo-green)',
+                    color: '#000000',
+                    border: 'var(--neo-border-2)',
+                    padding: '10px 14px',
+                    fontWeight: 900,
+                    marginBottom: '16px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px'
+                  }}
+                >
+                  <Check size={16} strokeWidth={3} />
+                  <span>{directCronSuccessMsg}</span>
+                </div>
+              )}
+
+              {/* Modal Buttons */}
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px' }}>
+                <button
+                  type="button"
+                  onClick={handleCloseDirectCron}
+                  className="btn-neo-outline"
+                >
+                  Cancel
+                </button>
+                <button
+                  id="btn-save-direct-cron"
+                  type="submit"
+                  disabled={savingDirectCron || !isValidCron(directResolvedCron)}
+                  className="btn-neo-cyan"
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+                >
+                  <Clock size={15} strokeWidth={2.5} />
+                  <span>{savingDirectCron ? 'Updating...' : 'Update Cron Schedule Now'}</span>
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

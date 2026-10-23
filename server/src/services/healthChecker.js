@@ -1,7 +1,9 @@
 import axios from 'axios';
 import { v4 as uuidv4 } from 'uuid';
 import { sendWhatsAppAlert } from '../utils/whatsapp.js';
-import { getSupabase } from './supabase.js';
+import { getSupabase, fetchAllPgCrons } from './supabase.js';
+import { isCheckDue, intervalToCronExpression } from '../utils/cronHelper.js';
+import { getProbeMetadata } from './probeMetadataStore.js';
 
 function formatDuration(ms) {
   const seconds = Math.floor(ms / 1000);
@@ -63,13 +65,33 @@ export async function executeHealthCheck(checkId) {
   let isSuccess = false;
   let errorMessage = null;
 
+  const meta = getProbeMetadata(check.id);
+  const customHeaders = meta?.headers || check.headers || null;
+  const requestBody = (meta?.request_body !== undefined && meta?.request_body !== null)
+    ? meta.request_body
+    : (check.request_body !== undefined ? check.request_body : null);
+
+  const axiosConfig = {
+    method: check.method || 'GET',
+    url: check.endpoint_url,
+    timeout: check.timeout_ms || 5000,
+    validateStatus: () => true // Allow any status code to inspect it
+  };
+
+  if (customHeaders && typeof customHeaders === 'object' && Object.keys(customHeaders).length > 0) {
+    axiosConfig.headers = { ...customHeaders };
+  }
+
+  if (requestBody !== null && requestBody !== undefined && requestBody !== '') {
+    axiosConfig.data = requestBody;
+    if (!axiosConfig.headers) axiosConfig.headers = {};
+    if (!axiosConfig.headers['Content-Type'] && !axiosConfig.headers['content-type'] && typeof requestBody === 'object') {
+      axiosConfig.headers['Content-Type'] = 'application/json';
+    }
+  }
+
   try {
-    const res = await axios({
-      method: check.method || 'GET',
-      url: check.endpoint_url,
-      timeout: check.timeout_ms || 5000,
-      validateStatus: () => true // Allow any status code to inspect it
-    });
+    const res = await axios(axiosConfig);
 
     statusCode = res.status;
 
@@ -173,23 +195,36 @@ export async function executeHealthCheck(checkId) {
 
 /**
  * Execute all active health checks directly against Supabase DB
+ * Checks cron schedule to only run probes that are due (or force all if requested)
  */
-export async function runAllDueHealthChecks() {
+export async function runAllDueHealthChecks(forceAll = false) {
   const client = getSupabase();
   if (!client) return [];
 
-  const { data: activeChecks, error } = await client
-    .from('health_checks')
-    .select('*')
-    .eq('is_active', true)
-    .eq('is_maintenance_mode', false);
+  const [{ data: activeChecks, error }, pgCrons] = await Promise.all([
+    client
+      .from('health_checks')
+      .select('*')
+      .eq('is_active', true)
+      .eq('is_maintenance_mode', false),
+    fetchAllPgCrons()
+  ]);
 
   if (error || !activeChecks) return [];
 
-  console.log(`[HealthChecker] Running checks for ${activeChecks.length} endpoints...`);
+  const now = new Date();
+  const dueChecks = forceAll
+    ? activeChecks
+    : activeChecks.filter(check => {
+        const cronJob = (pgCrons || []).find(j => j.health_check_id === check.id);
+        const schedule = cronJob?.schedule || intervalToCronExpression(check.interval_minutes);
+        return isCheckDue(schedule, check.last_checked_at, now);
+      });
+
+  console.log(`[HealthChecker] Running checks for ${dueChecks.length} of ${activeChecks.length} active endpoints...`);
 
   const results = [];
-  for (const check of activeChecks) {
+  for (const check of dueChecks) {
     try {
       const res = await executeHealthCheck(check.id);
       if (res) results.push(res);

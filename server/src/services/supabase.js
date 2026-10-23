@@ -1,5 +1,14 @@
 import { createClient } from '@supabase/supabase-js';
 import { config } from '../config/env.js';
+import {
+  normalizeCron,
+  isValidCron,
+  getNextCronRun,
+  describeCron,
+  intervalToCronExpression,
+  cronToIntervalMinutes
+} from '../utils/cronHelper.js';
+import { getProbeMetadata, setProbeMetadata } from './probeMetadataStore.js';
 
 let supabaseClient = null;
 let isConnected = false;
@@ -278,24 +287,18 @@ export async function syncAllFromSupabase() {
 // PG_CRON PROBE JOBS ENGINE (Supabase pg_cron + PostgreSQL cron.job)
 // ============================================================================
 
-/**
- * Generate standard pg_cron schedule expression from minutes interval
- * @param {number} intervalMinutes
- * @returns {string} Cron expression
- */
-export function intervalToCronExpression(intervalMinutes) {
-  const minutes = Math.max(1, Math.min(60, Number(intervalMinutes) || 5));
-  if (minutes === 1) return '* * * * *';
-  if (minutes === 60) return '0 * * * *';
-  return `*/${minutes} * * * *`;
-}
+export { intervalToCronExpression };
 
 /**
- * Compute readable next run timestamp
+ * Compute readable next run timestamp from minutes or cron expression
  */
-export function calculateNextRun(intervalMinutes) {
+export function calculateNextRun(intervalOrCron) {
+  if (typeof intervalOrCron === 'string' && isValidCron(intervalOrCron)) {
+    const next = getNextCronRun(intervalOrCron);
+    if (next) return next.toISOString();
+  }
   const now = new Date();
-  const minutes = Math.max(1, Number(intervalMinutes) || 5);
+  const minutes = Math.max(1, Number(intervalOrCron) || 5);
   const next = new Date(now.getTime() + minutes * 60 * 1000);
   return next.toISOString();
 }
@@ -303,31 +306,54 @@ export function calculateNextRun(intervalMinutes) {
 /**
  * Create or update pg_cron schedule for a health check probe
  * @param {object} healthCheck
+ * @param {string} [customCronSchedule]
  * @returns {object} pg_cron job details
  */
-export async function createOrUpdateProbeCron(healthCheck) {
+export async function createOrUpdateProbeCron(healthCheck, customCronSchedule) {
   const sanitizedName = (healthCheck.name || 'probe')
     .toLowerCase()
     .replace(/[^a-z0-9]/g, '_')
     .slice(0, 18);
   const shortId = healthCheck.id.slice(0, 8);
   const jobName = `devbox_probe_${sanitizedName}_${shortId}`;
-  const cronExpr = intervalToCronExpression(healthCheck.interval_minutes);
-  const isActive = Boolean(healthCheck.is_active && !healthCheck.is_maintenance_mode);
-
-  const serverUrl = process.env.APP_URL || `http://localhost:${config.port || 5000}`;
-  const pgNetCommand = `SELECT net.http_get(url := '${serverUrl}/api/health-checks/cron/run?id=${healthCheck.id}', headers := jsonb_build_object('Authorization', 'Bearer ${config.cronSecret}', 'Content-Type', 'application/json'));`;
 
   let existingIndex = pgCronsStore.findIndex(
     j => j.health_check_id === healthCheck.id || j.jobname === jobName
   );
+  const existingJob = existingIndex >= 0 ? pgCronsStore[existingIndex] : null;
+  const meta = getProbeMetadata(healthCheck.id);
+
+  // Preserve existing schedule: only change if explicitly provided or new
+  let cronExpr = null;
+  if (customCronSchedule && isValidCron(customCronSchedule)) {
+    cronExpr = normalizeCron(customCronSchedule);
+  } else if (healthCheck.cron_schedule && isValidCron(healthCheck.cron_schedule)) {
+    cronExpr = normalizeCron(healthCheck.cron_schedule);
+  } else if (meta?.cron_schedule && isValidCron(meta.cron_schedule)) {
+    cronExpr = normalizeCron(meta.cron_schedule);
+  } else if (existingJob?.schedule && isValidCron(existingJob.schedule)) {
+    cronExpr = normalizeCron(existingJob.schedule);
+  } else {
+    cronExpr = intervalToCronExpression(healthCheck.interval_minutes);
+  }
+
+  // Always persist into metadata store so it is never lost or reverted
+  setProbeMetadata(healthCheck.id, { cron_schedule: cronExpr });
+
+  const isActive = Boolean(healthCheck.is_active && !healthCheck.is_maintenance_mode);
+  const effectiveMinutes = healthCheck.interval_minutes || cronToIntervalMinutes(cronExpr);
+
+  const serverUrl = process.env.APP_URL || `http://localhost:${config.port || 5000}`;
+  const pgNetCommand = `SELECT net.http_get(url := '${serverUrl}/api/health-checks/cron/run?id=${healthCheck.id}', headers := jsonb_build_object('Authorization', 'Bearer ${config.cronSecret}', 'Content-Type', 'application/json'));`;
 
   let jobId = existingIndex >= 0 ? pgCronsStore[existingIndex].jobid : Math.floor(1000 + Math.random() * 9000);
+  const nextRunAt = calculateNextRun(cronExpr);
 
   const cronRecord = {
     jobid: jobId,
     jobname: jobName,
     schedule: cronExpr,
+    schedule_description: describeCron(cronExpr),
     command: pgNetCommand,
     nodename: 'supabase-db.internal',
     nodeport: 5432,
@@ -337,10 +363,10 @@ export async function createOrUpdateProbeCron(healthCheck) {
     health_check_id: healthCheck.id,
     health_check_name: healthCheck.name,
     endpoint_url: healthCheck.endpoint_url,
-    interval_minutes: healthCheck.interval_minutes || 5,
+    interval_minutes: effectiveMinutes,
     last_status: healthCheck.current_status === 'healthy' ? 'succeeded' : healthCheck.current_status === 'down' ? 'failed' : 'scheduled',
     last_run_at: healthCheck.last_checked_at || null,
-    next_run_at: calculateNextRun(healthCheck.interval_minutes),
+    next_run_at: nextRunAt,
     supabase_synced: false,
     updated_at: new Date().toISOString()
   };
@@ -368,7 +394,7 @@ export async function createOrUpdateProbeCron(healthCheck) {
             health_check_id: healthCheck.id,
             health_check_name: healthCheck.name,
             endpoint_url: healthCheck.endpoint_url,
-            interval_minutes: healthCheck.interval_minutes,
+            interval_minutes: effectiveMinutes,
             last_status: cronRecord.last_status,
             last_run_at: cronRecord.last_run_at,
             next_run_at: cronRecord.next_run_at,
@@ -484,12 +510,19 @@ export async function syncHealthChecksWithPgCron() {
   if (!client) return;
 
   try {
-    const { data: checks, error } = await client.from('health_checks').select('*');
+    const [{ data: checks, error }, { data: existingCrons }] = await Promise.all([
+      client.from('health_checks').select('*'),
+      client.from('devbox_pg_crons').select('*')
+    ]);
+
     if (error || !checks) return;
 
     let count = 0;
     for (const check of checks) {
-      await createOrUpdateProbeCron(check);
+      const existing = (existingCrons || []).find(c => c.health_check_id === check.id);
+      const meta = getProbeMetadata(check.id);
+      const scheduleToUse = check.cron_schedule || meta?.cron_schedule || existing?.schedule;
+      await createOrUpdateProbeCron(check, scheduleToUse);
       count++;
     }
 

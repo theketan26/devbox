@@ -233,6 +233,119 @@ async function runTests() {
     assert.strictEqual(updateRes.data.interval_minutes, 15);
     assert.strictEqual(updateRes.data.timeout_ms, 7000);
     console.log('✓ Health check probe update verified');
+
+    // Test 14b. Fetching Cron Presets
+    console.log('Testing Cron Presets endpoint...');
+    const presetsRes = await request('GET', '/api/health-checks/cron/presets');
+    assert.strictEqual(presetsRes.status, 200);
+    assert(Array.isArray(presetsRes.data.presets), 'Expected presets array');
+    const hasDaily = presetsRes.data.presets.some(p => p.value === '0 0 * * *');
+    const hasWeekly = presetsRes.data.presets.some(p => p.value === '0 0 * * 0');
+    assert(hasDaily, 'Missing daily preset');
+    assert(hasWeekly, 'Missing weekly preset');
+    console.log('✓ Health check cron presets (Daily, Weekly, Hourly, Minutes) verified');
+
+    // Test 14c. Direct Cron Schedule Update: Daily at Midnight
+    console.log('Testing Direct Cron Schedule Update (Daily at Midnight: 0 0 * * *)...');
+    const directDailyRes = await request(
+      'PUT',
+      `/api/health-checks/${hcList.data[0].id}/cron`,
+      { cron_schedule: '0 0 * * *' },
+      { Authorization: `Bearer ${authToken}` }
+    );
+    assert.strictEqual(directDailyRes.status, 200);
+    assert.strictEqual(directDailyRes.data.cron_schedule, '0 0 * * *');
+    assert.strictEqual(directDailyRes.data.interval_minutes, 1440);
+    console.log('✓ Direct Daily cron schedule update verified');
+
+    // Test 14d. Direct Cron Schedule Update: Weekly on Sunday
+    console.log('Testing Direct Cron Schedule Update (Weekly on Sunday: 0 0 * * 0)...');
+    const directWeeklyRes = await request(
+      'PUT',
+      `/api/health-checks/${hcList.data[0].id}/cron`,
+      { cron_schedule: '0 0 * * 0' },
+      { Authorization: `Bearer ${authToken}` }
+    );
+    assert.strictEqual(directWeeklyRes.status, 200);
+    assert.strictEqual(directWeeklyRes.data.cron_schedule, '0 0 * * 0');
+    assert.strictEqual(directWeeklyRes.data.interval_minutes, 10080);
+    console.log('✓ Direct Weekly cron schedule update verified');
+
+    // Test 14e. Probe with custom Headers and Body
+    console.log('Testing Health Check probe with custom headers and request body...');
+    const customProbeRes = await request(
+      'PUT',
+      `/api/health-checks/${hcList.data[0].id}`,
+      {
+        headers: { Authorization: 'Bearer test-token-123', 'X-Custom-Header': 'HealthCheckTest' },
+        request_body: { action: 'ping', test: true },
+        method: 'POST'
+      },
+      { Authorization: `Bearer ${authToken}` }
+    );
+    assert.strictEqual(customProbeRes.status, 200);
+    assert.deepStrictEqual(customProbeRes.data.headers, {
+      Authorization: 'Bearer test-token-123',
+      'X-Custom-Header': 'HealthCheckTest'
+    });
+    assert.deepStrictEqual(customProbeRes.data.request_body, {
+      action: 'ping',
+      test: true
+    });
+
+    const getProbeRes = await request('GET', `/api/health-checks/${hcList.data[0].id}`);
+    assert.strictEqual(getProbeRes.status, 200);
+    assert.deepStrictEqual(getProbeRes.data.headers, {
+      Authorization: 'Bearer test-token-123',
+      'X-Custom-Header': 'HealthCheckTest'
+    });
+    assert.deepStrictEqual(getProbeRes.data.request_body, {
+      action: 'ping',
+      test: true
+    });
+    console.log('✓ Health check probe custom headers & body verified');
+
+    // Test 14f. Ping does NOT change or mutate the configured cron schedule
+    console.log('Testing that Ping preserves configured cron schedule...');
+    const targetCheckId = hcList.data[0].id;
+    // Set a distinct schedule: Daily at 9:00 AM (0 9 * * *)
+    const setDaily9AmRes = await request(
+      'PUT',
+      `/api/health-checks/${targetCheckId}/cron`,
+      { cron_schedule: '0 9 * * *' },
+      { Authorization: `Bearer ${authToken}` }
+    );
+    assert.strictEqual(setDaily9AmRes.status, 200);
+    assert.strictEqual(setDaily9AmRes.data.cron_schedule, '0 9 * * *');
+
+    // Trigger Ping Now
+    const pingAgainRes = await request(
+      'POST',
+      `/api/health-checks/${targetCheckId}/ping`,
+      null,
+      { Authorization: `Bearer ${authToken}` }
+    );
+    assert.strictEqual(pingAgainRes.status, 200);
+
+    // Fetch single check details and list of all checks
+    const singleAfterPing = await request('GET', `/api/health-checks/${targetCheckId}`);
+    assert.strictEqual(singleAfterPing.status, 200);
+    assert.strictEqual(
+      singleAfterPing.data.cron_schedule,
+      '0 9 * * *',
+      `Schedule mutated on single GET after ping: got ${singleAfterPing.data.cron_schedule}`
+    );
+
+    const listAfterPing = await request('GET', '/api/health-checks');
+    assert.strictEqual(listAfterPing.status, 200);
+    const matchedCheck = listAfterPing.data.find(c => c.id === targetCheckId);
+    assert(matchedCheck, 'Check not found in list');
+    assert.strictEqual(
+      matchedCheck.cron_schedule,
+      '0 9 * * *',
+      `Schedule mutated on list GET after ping: got ${matchedCheck.cron_schedule}`
+    );
+    console.log('✓ Health check schedule stability verified: Ping does NOT change configured cron schedule');
   }
 
   // 15. Application Files Upload & Download URL

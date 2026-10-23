@@ -148,6 +148,12 @@ export const api = {
     update: (id, data) => apiRequest(`/health-checks/${id}`, { method: 'PUT', body: data }),
     ping: (id) => apiRequest(`/health-checks/${id}/ping`, { method: 'POST' }),
     delete: (id) => apiRequest(`/health-checks/${id}`, { method: 'DELETE' }),
+    updateCron: (id, cronSchedule, intervalMinutes) =>
+      apiRequest(`/health-checks/${id}/cron`, {
+        method: 'PUT',
+        body: { cron_schedule: cronSchedule, interval_minutes: intervalMinutes }
+      }),
+    getCronPresets: () => apiRequest('/health-checks/cron/presets'),
     listPgCrons: () => apiRequest('/health-checks/pg-cron'),
     syncPgCrons: () => apiRequest('/health-checks/pg-cron/sync', { method: 'POST' })
   },
